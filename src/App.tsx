@@ -52,7 +52,7 @@ interface PersistedWorkspace {
   handledSummaryIds: string[]
 }
 
-const WORKSPACE_KEY = 'vct-workspace-v2'
+const WORKSPACE_KEY = 'vct-workspace-v3'
 const AUTH_KEY = 'vct-auth-mode-v1'
 
 function cloneSeed(): PersistedWorkspace {
