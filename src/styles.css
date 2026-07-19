@@ -1288,6 +1288,44 @@ kbd {
   font: 8px var(--mono);
 }
 
+.realtime-presence-chip {
+  display: inline-flex;
+  height: 25px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1);
+  color: var(--muted);
+  font: 7px var(--mono);
+}
+
+.realtime-presence-chip span,
+.realtime-presence-chip b {
+  white-space: nowrap;
+}
+
+.realtime-presence-chip b {
+  max-width: 74px;
+  overflow: hidden;
+  color: var(--faint);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+}
+
+.realtime-presence-chip--connected {
+  border-color: #334c35;
+  background: #172019;
+  color: var(--active);
+}
+
+.realtime-presence-chip--connected b { color: var(--text-soft); text-transform: none; }
+.realtime-presence-chip--syncing { color: var(--approval); }
+.realtime-presence-chip--offline { color: var(--risk); }
+.realtime-presence-chip:hover { border-color: var(--border-strong); background: var(--surface-2); }
+
 .active-agent-chip {
   display: flex;
   height: 30px;
@@ -1339,6 +1377,11 @@ kbd {
   border-right-color: transparent;
   border-radius: 50%;
   animation: spin 800ms linear infinite;
+}
+
+.sync-banner--offline .mini-spinner {
+  border-color: currentColor;
+  animation: none;
 }
 
 /* Timeline and return brief */
@@ -2546,6 +2589,71 @@ kbd {
 .settings-list em { display: inline-flex; align-items: center; gap: 3px; color: var(--active); font: normal 7px var(--mono); }
 .settings-footer > span { flex: 1; }
 
+.realtime-identity-modal form { display: block; }
+
+.realtime-identity-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.realtime-identity-preview > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.realtime-identity-preview > div { flex: 1; min-width: 0; }
+.realtime-identity-preview b,
+.realtime-identity-preview small { display: block; }
+.realtime-identity-preview b { color: var(--text); font-size: 11px; }
+.realtime-identity-preview small { margin-top: 2px; color: var(--muted); font: 8px var(--mono); }
+
+.realtime-identity-preview em {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--active);
+  font: normal 7px var(--mono);
+  text-transform: uppercase;
+}
+
+.realtime-identity-fields {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+  padding: 16px 18px 18px;
+}
+
+.realtime-identity-fields label > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--faint);
+  font: 7px var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.realtime-identity-fields input {
+  width: 100%;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--surface-0);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.realtime-identity-fields input:focus { border-color: #637a5b; }
+
 .github-install-note { display: flex; align-items: center; gap: 9px; margin: 14px 16px 10px; padding: 10px; border: 1px solid #3c5439; border-radius: var(--radius-sm); background: #182016; color: var(--active); }
 .github-install-note > span { flex: 1; }
 .github-install-note b, .github-install-note small { display: block; }
@@ -2809,6 +2917,10 @@ kbd {
 }
 
 @media (max-width: 620px) {
+  .realtime-identity-fields {
+    grid-template-columns: 1fr;
+  }
+
   .auth-nav,
   .auth-hero {
     width: min(100% - 28px, 1280px);

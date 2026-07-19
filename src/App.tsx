@@ -8,6 +8,7 @@ import type {
   Conversation,
   Draft,
   Message,
+  Participant,
   ReturnSummary,
 } from './domain/types'
 import { seedData } from './data/seed'
@@ -22,9 +23,19 @@ import { DetailPanel } from './components/DetailPanel'
 import { OnboardingFlow } from './components/OnboardingFlow'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { RoomSearch } from './components/RoomSearch'
+import { RealtimeIdentityModal } from './components/RealtimeIdentityModal'
 import { ThreadPanel } from './components/ThreadPanel'
 import { Timeline, type TimelineHandle } from './components/Timeline'
 import { Toast } from './components/Toast'
+import { LIVE_CONVERSATION_ID, type RealtimeMessageRecord, type RealtimeProfile } from './realtime/protocol'
+import {
+  createRealtimeMessageId,
+  loadRealtimeProfile,
+  realtimeProfileToParticipant,
+  realtimeRecordToMessage,
+  RealtimeRoomClient,
+  saveRealtimeProfile,
+} from './services/realtime'
 
 type AuthMode = 'signed-out' | 'onboarding' | 'app'
 
@@ -122,20 +133,36 @@ export function App() {
   const [agentActionsOpen, setAgentActionsOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [connectRepositoryOpen, setConnectRepositoryOpen] = useState(false)
+  const [realtimeIdentityOpen, setRealtimeIdentityOpen] = useState(false)
   const [syncState, setSyncState] = useState<'connected' | 'syncing' | 'offline'>('syncing')
+  const [realtimeProfile, setRealtimeProfile] = useState<RealtimeProfile>(loadRealtimeProfile)
+  const [realtimeParticipants, setRealtimeParticipants] = useState<Participant[]>(() => [
+    realtimeProfileToParticipant(loadRealtimeProfile()),
+  ])
+  const [realtimeOnlineCount, setRealtimeOnlineCount] = useState(0)
   const [toast, setToast] = useState<string | null>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const timelineRef = useRef<TimelineHandle>(null)
   const keyPrefixRef = useRef<string | null>(null)
+  const realtimeClientRef = useRef<RealtimeRoomClient | null>(null)
 
   const selectedRawConversation = conversations.find((item) => item.id === selectedConversationId) ?? conversations[0]
+  const allParticipants = useMemo(() => {
+    const participants = new Map(seedData.participants.map((participant) => [participant.id, participant]))
+    for (const participant of realtimeParticipants) participants.set(participant.id, participant)
+    return [...participants.values()]
+  }, [realtimeParticipants])
   const selectedConversation = useMemo(() => {
     if (!selectedRawConversation) return undefined
+    const participants = selectedRawConversation.id === LIVE_CONVERSATION_ID
+      ? allParticipants
+      : selectedRawConversation.participants
     return {
       ...selectedRawConversation,
+      participants,
       agents: agentSessions.filter((session) => session.conversationId === selectedRawConversation.id),
     }
-  }, [agentSessions, selectedRawConversation])
+  }, [agentSessions, allParticipants, selectedRawConversation])
   const selectedMessages = useMemo(
     () => messages.filter((message) => message.conversationId === selectedConversationId).sort((a, b) => a.sentAt.localeCompare(b.sentAt)),
     [messages, selectedConversationId],
@@ -167,11 +194,6 @@ export function App() {
     }
     window.localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot))
   }, [activityLog, agentSessions, approvalRequests, attentionItems, conversations, drafts, handledSummaryIds, messages, returnSummaries, selectedConversationId])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSyncState('connected'), 750)
-    return () => window.clearTimeout(timer)
-  }, [])
 
   useEffect(() => {
     const onResize = () => {
@@ -249,13 +271,97 @@ export function App() {
   }, [selectedConversationId, selectedSummary])
 
   const addMessage = useCallback((message: Message) => {
-    setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message])
+    setMessages((current) => current.some((item) => item.id === message.id)
+      ? current.map((item) => item.id === message.id ? message : item)
+      : [...current, message])
     setConversations((current) => current.map((conversation) => conversation.id === message.conversationId ? {
       ...conversation,
       lastMessageAt: message.sentAt,
       lastMessagePreview: message.kind === 'human' || message.kind === 'agent-response' ? message.content.text : conversation.lastMessagePreview,
     } : conversation))
   }, [])
+
+  const mergeRealtimeRecords = useCallback((records: RealtimeMessageRecord[]) => {
+    if (!records.length) return
+    const incoming = records.map(realtimeRecordToMessage)
+    setMessages((current) => {
+      const merged = new Map(current.map((message) => [message.id, message]))
+      for (const message of incoming) merged.set(message.id, message)
+      return [...merged.values()]
+    })
+    const latest = [...incoming].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]
+    if (latest) {
+      setConversations((current) => current.map((conversation) => conversation.id === LIVE_CONVERSATION_ID ? {
+        ...conversation,
+        lastMessageAt: latest.sentAt,
+        lastMessagePreview: latest.content.text,
+      } : conversation))
+    }
+  }, [])
+
+  useEffect(() => {
+    if (authMode !== 'app') return
+    const client = new RealtimeRoomClient(realtimeProfile, {
+      onStatus: setSyncState,
+      onEvent: (event) => {
+        if (event.type === 'snapshot') {
+          mergeRealtimeRecords(event.messages)
+          const onlineIds = new Set(event.participants.map((profile) => profile.clientId))
+          const profiles = new Map<string, RealtimeProfile>()
+          for (const message of event.messages) {
+            profiles.set(message.clientId, {
+              clientId: message.clientId,
+              displayName: message.displayName,
+              handle: message.handle,
+              avatarColor: message.avatarColor,
+            })
+          }
+          for (const profile of event.participants) profiles.set(profile.clientId, profile)
+          setRealtimeParticipants([...profiles.values()].map((profile) => ({
+            ...realtimeProfileToParticipant(profile),
+            presence: onlineIds.has(profile.clientId) ? 'online' : 'offline',
+          })))
+          setRealtimeOnlineCount(event.onlineCount)
+        } else if (event.type === 'message') {
+          mergeRealtimeRecords([event.message])
+          setRealtimeParticipants((current) => {
+            const participant = realtimeProfileToParticipant({
+              clientId: event.message.clientId,
+              displayName: event.message.displayName,
+              handle: event.message.handle,
+              avatarColor: event.message.avatarColor,
+            })
+            return current.some((item) => item.id === participant.id)
+              ? current.map((item) => item.id === participant.id ? { ...participant, presence: item.presence } : item)
+              : [...current, participant]
+          })
+          window.setTimeout(() => timelineRef.current?.scrollToBottom(), 30)
+        } else if (event.type === 'presence') {
+          const onlineIds = new Set(event.participants.map((profile) => `realtime:${profile.clientId}`))
+          setRealtimeParticipants((current) => {
+            const participants = new Map<string, Participant>(current.map((participant) => [participant.id, { ...participant, presence: 'offline' }]))
+            for (const profile of event.participants) {
+              const participant = realtimeProfileToParticipant(profile)
+              participants.set(participant.id, participant)
+            }
+            return [...participants.values()].map((participant) => onlineIds.has(participant.id) ? { ...participant, presence: 'online' } : participant)
+          })
+          setRealtimeOnlineCount(event.onlineCount)
+        } else if (event.type === 'error') {
+          setToast(event.message)
+          if (event.clientMessageId) {
+            setMessages((current) => current.map((message) => message.id === event.clientMessageId ? { ...message, deliveryState: 'failed' } : message))
+          }
+        }
+      },
+    })
+    realtimeClientRef.current = client
+    client.connect()
+    return () => {
+      client.disconnect()
+      if (realtimeClientRef.current === client) realtimeClientRef.current = null
+    }
+  }, [authMode, mergeRealtimeRecords, realtimeProfile])
 
   const startAgent = useCallback(async (
     agentId: string,
@@ -339,12 +445,13 @@ export function App() {
 
   const sendMessage = useCallback((text: string, attachmentName?: string, threadId?: string) => {
     if (!selectedConversation) return
-    const id = localId('local-message')
+    const isLiveChannel = selectedConversation.id === LIVE_CONVERSATION_ID
+    const id = isLiveChannel ? createRealtimeMessageId(realtimeProfile.clientId) : localId('local-message')
     const body = attachmentName ? `${text}${text ? '\n\n' : ''}📎 ${attachmentName}` : text
     const message: Message = {
       id,
       conversationId: selectedConversation.id,
-      senderId: seedData.currentUser.participantId,
+      senderId: isLiveChannel ? `realtime:${realtimeProfile.clientId}` : seedData.currentUser.participantId,
       sentAt: new Date().toISOString(),
       threadId,
       deliveryState: 'local-echo',
@@ -355,15 +462,31 @@ export function App() {
     addMessage(message)
     const draftId = threadId ? `${selectedConversation.id}:${threadId}` : `${selectedConversation.id}:room`
     setDraft(draftId, selectedConversation.id, threadId, '')
-    window.setTimeout(() => {
-      setMessages((current) => current.map((item) => item.id === id ? { ...item, deliveryState: 'sent' } : item))
-      timelineRef.current?.scrollToBottom()
-    }, 260)
+    if (isLiveChannel) {
+      realtimeClientRef.current?.send({ id, text: body, threadId })
+      window.setTimeout(() => timelineRef.current?.scrollToBottom(), 30)
+    } else {
+      window.setTimeout(() => {
+        setMessages((current) => current.map((item) => item.id === id ? { ...item, deliveryState: 'sent' } : item))
+        timelineRef.current?.scrollToBottom()
+      }, 260)
+    }
     if (/@(forge|scout)\b/i.test(text)) {
       const mentioned = /@scout\b/i.test(text) ? seedData.agentDefinitions.find((agent) => agent.name === 'Scout') : seedData.agentDefinitions.find((agent) => agent.name === 'Forge')
       if (mentioned) window.setTimeout(() => void startAgent(mentioned.id, 'ask', text, ['read-room', 'read-repository'], threadId), 420)
     }
-  }, [addMessage, selectedConversation, setDraft, startAgent])
+  }, [addMessage, realtimeProfile.clientId, selectedConversation, setDraft, startAgent])
+
+  const retryMessage = useCallback((messageId: string) => {
+    const message = messages.find((item) => item.id === messageId)
+    if (!message || message.kind !== 'human') return
+    setMessages((current) => current.map((item) => item.id === messageId ? { ...item, deliveryState: 'local-echo' } : item))
+    if (message.conversationId === LIVE_CONVERSATION_ID) {
+      realtimeClientRef.current?.send({ id: message.id, text: message.content.text, threadId: message.threadId })
+    } else {
+      window.setTimeout(() => setMessages((current) => current.map((item) => item.id === messageId ? { ...item, deliveryState: 'sent' } : item)), 260)
+    }
+  }, [messages])
 
   const resolveApproval = useCallback(async (approvalId: string, decision: 'approved' | 'denied') => {
     try {
@@ -506,26 +629,30 @@ export function App() {
       />
 
       <main className="conversation-scene">
-        {syncState !== 'connected' && (
+        {selectedConversation.id === LIVE_CONVERSATION_ID && syncState !== 'connected' && (
           <div className={`sync-banner sync-banner--${syncState}`}>
             <span className="mini-spinner" />
-            {syncState === 'syncing' ? 'Restoring cached workspace · syncing new room events…' : 'You’re offline · messages will send when reconnected'}
+            {syncState === 'syncing' ? 'Connecting to live #general…' : 'Live channel unavailable · messages remain queued in this browser'}
           </div>
         )}
         <ConversationHeader
           conversation={selectedConversation}
           isHandled={!selectedAttention}
           detailsOpen={detailsOpen}
+          liveConnection={selectedConversation.id === LIVE_CONVERSATION_ID ? syncState : undefined}
+          liveIdentity={realtimeProfile.displayName}
+          liveOnlineCount={realtimeOnlineCount}
           onOpenNavigation={() => setMobileNavigationOpen(true)}
           onOpenSearch={() => setRoomSearchOpen(true)}
           onOpenAgentMenu={() => setDetailsOpen(true)}
+          onOpenLiveIdentity={() => setRealtimeIdentityOpen(true)}
           onToggleDetails={() => { setSelectedThreadId(null); setDetailsOpen((value) => !value) }}
           onMarkHandled={markHandled}
         />
         <Timeline
           ref={timelineRef}
           messages={selectedMessages}
-          participants={seedData.participants}
+          participants={allParticipants}
           agentSessions={agentSessions}
           threads={seedData.threads.filter((thread) => thread.conversationId === selectedConversation.id)}
           approvalRequests={approvalRequests}
@@ -548,7 +675,7 @@ export function App() {
             if (existing) return { ...message, reactions: message.reactions.map((reaction) => reaction.emoji === emoji ? { ...reaction, reactedByCurrentUser: !reaction.reactedByCurrentUser, count: Math.max(0, reaction.count + (reaction.reactedByCurrentUser ? -1 : 1)) } : reaction) } as Message
             return { ...message, reactions: [...message.reactions, { emoji, label: emoji, count: 1, participantIds: [seedData.currentUser.participantId], reactedByCurrentUser: true }] } as Message
           }))}
-          onRetryMessage={(messageId) => setMessages((current) => current.map((message) => message.id === messageId ? { ...message, deliveryState: 'local-echo' } : message))}
+          onRetryMessage={retryMessage}
         />
         <Composer
           inputRef={composerRef}
@@ -566,7 +693,7 @@ export function App() {
         <ThreadPanel
           thread={selectedThread}
           messages={messages}
-          participants={seedData.participants}
+          participants={allParticipants}
           draft={threadDraft}
           onChangeDraft={(value) => setDraft(threadDraftId, selectedConversation.id, selectedThread.id, value)}
           onSend={(text, attachment) => sendMessage(text, attachment, selectedThread.id)}
@@ -611,7 +738,7 @@ export function App() {
         open={roomSearchOpen}
         roomTitle={selectedConversation.title}
         messages={selectedMessages}
-        participants={seedData.participants}
+        participants={allParticipants}
         onClose={() => setRoomSearchOpen(false)}
         onJump={(messageId) => timelineRef.current?.scrollToMessage(messageId)}
       />
@@ -635,6 +762,16 @@ export function App() {
         repositories={seedData.repositories}
         onClose={() => setConnectRepositoryOpen(false)}
         onConnect={(repositoryId) => setToast(`${seedData.repositories.find((repo) => repo.id === repositoryId)?.fullName ?? 'Repository'} connected`)}
+      />
+      <RealtimeIdentityModal
+        open={realtimeIdentityOpen}
+        profile={realtimeProfile}
+        onClose={() => setRealtimeIdentityOpen(false)}
+        onSave={(profile) => {
+          saveRealtimeProfile(profile)
+          setRealtimeProfile(profile)
+          setToast(`Live identity updated to ${profile.displayName}`)
+        }}
       />
       <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>

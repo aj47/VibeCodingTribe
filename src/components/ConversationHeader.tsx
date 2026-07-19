@@ -5,6 +5,7 @@ import {
   Github,
   Info,
   Menu,
+  Radio,
   Search,
   Users,
 } from 'lucide-react'
@@ -15,22 +16,30 @@ interface ConversationHeaderProps {
   conversation: Conversation
   isHandled: boolean
   detailsOpen: boolean
+  liveConnection?: 'connected' | 'syncing' | 'offline'
+  liveIdentity?: string
+  liveOnlineCount?: number
   onOpenNavigation: () => void
   onOpenSearch: () => void
   onOpenAgentMenu: () => void
   onToggleDetails: () => void
   onMarkHandled: () => void
+  onOpenLiveIdentity?: () => void
 }
 
 export function ConversationHeader({
   conversation,
   isHandled,
   detailsOpen,
+  liveConnection,
+  liveIdentity,
+  liveOnlineCount = 0,
   onOpenNavigation,
   onOpenSearch,
   onOpenAgentMenu,
   onToggleDetails,
   onMarkHandled,
+  onOpenLiveIdentity,
 }: ConversationHeaderProps) {
   const activeAgents = conversation.agents.filter((agent) =>
     ['working', 'blocked', 'approval-required', 'listening'].includes(agent.status),
@@ -82,6 +91,18 @@ export function ConversationHeader({
         <span className="participant-count">
           <Users size={12} /> {conversation.participants.length}
         </span>
+        {liveConnection && (
+          <button
+            className={`realtime-presence-chip realtime-presence-chip--${liveConnection}`}
+            type="button"
+            onClick={onOpenLiveIdentity}
+            aria-label={`${liveOnlineCount} live connection${liveOnlineCount === 1 ? '' : 's'}. Identity ${liveIdentity ?? 'builder'}`}
+          >
+            <Radio size={11} />
+            <span>{liveOnlineCount} live</span>
+            <b>{liveConnection === 'connected' ? liveIdentity : liveConnection}</b>
+          </button>
+        )}
         {activeAgents.length > 0 && (
           <button className="active-agent-chip" type="button" onClick={onOpenAgentMenu}>
             <span className={`agent-beacon agent-beacon--${activeAgents[0].status}`}>

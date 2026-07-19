@@ -84,7 +84,7 @@ describe('mock adapters', () => {
       id: 'github-write-0001',
       action: 'create-branch',
       status: 'completed',
-      url: 'https://github.com/vibecodingtribe/vibecodingtribe/tree/fix/oauth-callback-lock',
+      url: 'https://github.com/aj47/VibeCodingTribe/tree/fix/oauth-callback-lock',
       completedAt: '2026-07-18T18:10:02.000Z',
     })
   })

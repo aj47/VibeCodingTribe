@@ -11,10 +11,19 @@ npm run dev
 
 Open [http://localhost:4173](http://localhost:4173). The seeded workspace opens directly so the core product can be evaluated immediately. Use **Profile → Sign out** to exercise GitHub sign-in and the three-step onboarding flow.
 
+Run the one-room realtime backend in a second terminal:
+
+```bash
+npm run dev:realtime
+```
+
+The local client connects to `localhost:8787`; the production client connects to the deployed Cloudflare Worker.
+
 The production preview is deployed to [vibecodingtribe.pages.dev](https://vibecodingtribe.pages.dev) with Cloudflare Pages. An authenticated Wrangler session can rebuild and deploy the current checkout with:
 
 ```bash
 npm run deploy:cloudflare
+npm run deploy:realtime
 ```
 
 The command targets the `vibecodingtribe` Pages project and its `main` production branch. Local Cloudflare credentials and development variables are ignored by Git.
@@ -39,6 +48,7 @@ npm run build
 - Repository-write approval with exact tool, scope, consequence, risk, audit details, allow-once, and deny paths
 - Deterministic local agent streaming and a gated mock GitHub branch-write result
 - Fast local echo, retry state, file attachment affordance, mentions, reactions, and per-room drafts
+- Durable realtime messages, reconnecting outbox, browser identity, live presence, and persisted history for `aj47/VibeCodingTribe#general`
 - Room search, global quick switcher, URL-backed room/thread/panel location, and keyboard shortcuts
 - GitHub sign-in presentation, guided onboarding, repository connection, profile, and safety defaults
 - Desktop, tablet, and narrow responsive layouts with mobile drawer navigation
@@ -59,17 +69,20 @@ Useful shortcuts:
 
 ## Architecture
 
-The UI consumes normalized product records from [`src/domain/types.ts`](src/domain/types.ts), never Matrix room objects or raw GitHub payloads. [`src/services/adapters.ts`](src/services/adapters.ts) defines the transport seams for Matrix, GitHub, and agent orchestration and ships deterministic in-browser implementations for this vertical slice.
+The UI consumes normalized product records from [`src/domain/types.ts`](src/domain/types.ts), never raw transport objects or GitHub payloads. [`src/services/adapters.ts`](src/services/adapters.ts) defines the broader Matrix, GitHub, and agent seams. The launch room uses a dedicated realtime client and protocol shared with the Worker.
 
 ```text
-React product UI
-  ├── MatrixAdapter  → rooms, messages, typing, read state, search
-  ├── GitHubAdapter  → repositories, events, checks, approved writes
-  └── AgentAdapter   → sessions, streams, approvals, activity
+React product UI on Cloudflare Pages
+  ├── RealtimeRoomClient ── WebSocket ── Cloudflare Worker
+  │                                      └── Durable Object (one room)
+  │                                          ├── live sockets/presence
+  │                                          └── persisted message history
+  ├── GitHubAdapter  → seeded events, checks, approved-write contract
+  └── AgentAdapter   → deterministic sessions, streams, approvals, activity
 ```
 
-Production wiring can replace each mock independently while preserving the attention, conversation, approval, and agent view models. The local workspace persists in `localStorage` so drafts, approvals, agent state, handled items, and selected context survive reloads.
+The realtime room is pinned to `aj47/VibeCodingTribe#general`. Messages use optimistic local echo, are queued across disconnects, deduplicated by client message ID, broadcast over WebSockets, and replayed from the room's durable history. The rest of the workspace persists in `localStorage` so drafts, approvals, agent state, handled items, and selected context survive reloads.
 
 ## Honest MVP boundary
 
-This repository implements the complete interactive client slice and backend contracts, not deployed infrastructure. Production still requires GitHub OAuth/App credentials and callbacks, a Matrix/Synapse deployment and provisioning service, PostgreSQL/Redis/object storage, webhook ingestion, a sandboxed agent runtime, secrets management, and server-side audit/authorization enforcement. See [`docs/implementation-status.md`](docs/implementation-status.md) for the handoff map.
+This is a deployable one-room MVP, not yet a multi-tenant production system. Live chat currently uses a browser-generated guest identity; GitHub OAuth/App installation, authenticated membership, webhook ingestion, realtime reactions/typing/threads, media storage, a sandboxed agent runtime, secrets management, moderation, and server-side audit/authorization enforcement remain launch work. Other rooms and GitHub/agent events are product-demo data. See [`docs/implementation-status.md`](docs/implementation-status.md) for the handoff map.
