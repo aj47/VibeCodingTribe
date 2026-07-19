@@ -26,6 +26,14 @@ npm run deploy:cloudflare
 npm run deploy:realtime
 ```
 
+The full product, architecture, protocol, deployment, operations, security, and launch documentation is published at [docs.vibecodingtribe.com](https://docs.vibecodingtribe.com). Run or deploy the separate docs application with:
+
+```bash
+npm run dev:docs
+npm run build:docs
+npm run deploy:docs
+```
+
 The command targets the `vibecodingtribe` Pages project and its `main` production branch. Local Cloudflare credentials and development variables are ignored by Git.
 
 Quality commands:

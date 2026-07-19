@@ -8,15 +8,19 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "dev:docs": "vite --config vite.docs.config.ts",
     "build": "tsc -b && vite build",
+    "build:docs": "tsc -p tsconfig.docs.json && vite build --config vite.docs.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview --host 0.0.0.0",
+    "preview:docs": "vite preview --config vite.docs.config.ts",
     "dev:realtime": "wrangler dev --config wrangler.realtime.jsonc --port 8787",
     "deploy:realtime": "wrangler deploy --config wrangler.realtime.jsonc",
-    "deploy:cloudflare": "npm run build && wrangler pages deploy dist --project-name vibecodingtribe --branch main"
+    "deploy:cloudflare": "npm run build && wrangler pages deploy dist --project-name vibecodingtribe --branch main",
+    "deploy:docs": "npm run build:docs && wrangler pages deploy dist-docs --project-name vibecodingtribe-docs --branch main"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",
