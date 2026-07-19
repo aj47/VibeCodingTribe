@@ -133,8 +133,7 @@ export class RealtimeRoom implements DurableObject {
     this.broadcast({ type: 'message', message })
   }
 
-  webSocketClose(socket: WebSocket, code: number, reason: string) {
-    socket.close(code, reason)
+  webSocketClose() {
     this.broadcastPresence()
   }
 
