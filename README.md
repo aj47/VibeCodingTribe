@@ -11,6 +11,14 @@ npm run dev
 
 Open [http://localhost:4173](http://localhost:4173). The seeded workspace opens directly so the core product can be evaluated immediately. Use **Profile → Sign out** to exercise GitHub sign-in and the three-step onboarding flow.
 
+The production preview is deployed to [vibecodingtribe.pages.dev](https://vibecodingtribe.pages.dev) with Cloudflare Pages. An authenticated Wrangler session can rebuild and deploy the current checkout with:
+
+```bash
+npm run deploy:cloudflare
+```
+
+The command targets the `vibecodingtribe` Pages project and its `main` production branch. Local Cloudflare credentials and development variables are ignored by Git.
+
 Quality commands:
 
 ```bash
