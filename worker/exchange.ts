@@ -16,8 +16,9 @@ import type {
   SubmitFeedbackInput,
 } from '../src/exchange/types'
 
-const STATE_KEY = 'exchange-state-v1'
-const COMMAND_PREFIX = 'exchange-command:'
+const LEGACY_STATE_KEY = 'exchange-state-v1'
+const STATE_KEY = 'exchange-state-v2'
+const COMMAND_PREFIX = 'exchange-command-v2:'
 const MAX_COMMAND_BYTES = 64 * 1024
 
 interface ProcessedCommand {
@@ -188,7 +189,10 @@ export class ExchangeStore implements DurableObject {
     let commandErrorMessage = ''
     await this.state.storage.transaction(async (transaction) => {
       let current = await transaction.get<ExchangeState>(STATE_KEY)
-      if (!current) current = createEmptyExchangeState()
+      if (!current) {
+        current = createEmptyExchangeState()
+        await transaction.delete(LEGACY_STATE_KEY)
+      }
       current = ensureExchangeUser(current, actor.user, now)
       current = expireAbandonedClaims(current, now)
 

@@ -13,9 +13,9 @@ import type { CreateMissionInput, SubmitFeedbackInput } from './types'
 import { createTestExchangeState } from '../test/exchange-fixtures'
 
 const missionInput: CreateMissionInput = {
-  productName: 'Relay Notes',
-  productUrl: 'https://relay-notes.example',
-  productDescription: 'Team handoff notes',
+  productName: 'Example Product',
+  productUrl: 'https://example.com',
+  productDescription: 'Example product description',
   title: 'Test onboarding',
   scenario: 'Create a workspace and invite a teammate',
   successCriteria: 'Finish in under five minutes',
