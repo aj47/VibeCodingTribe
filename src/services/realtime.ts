@@ -1,11 +1,9 @@
-import type { HumanMessage, Participant } from '../domain/types'
 import {
-  LIVE_CONVERSATION_ID,
+  normalizeAvatarUrl,
   normalizeDisplayName,
   normalizeHandle,
   parseRealtimeServerEvent,
   type RealtimeClientEvent,
-  type RealtimeMessageRecord,
   type RealtimeProfile,
   type RealtimeServerEvent,
 } from '../realtime/protocol'
@@ -17,10 +15,10 @@ interface RealtimeClientHandlers {
   onEvent: (event: RealtimeServerEvent) => void
 }
 
-type SocketFactory = (url: string) => WebSocket
+type SocketFactory = (url: string, protocols?: string[]) => WebSocket
 
-const PROFILE_KEY = 'vct-realtime-profile-v1'
-const OUTBOX_KEY = 'vct-realtime-outbox-v1'
+const PROFILE_KEY = 'vct-general-profile-v2'
+const OUTBOX_KEY = 'vct-general-outbox-v2'
 const PRODUCTION_ORIGIN = 'https://vibecodingtribe-realtime.techfren.workers.dev'
 const AVATAR_COLORS = ['#657c54', '#4d7f73', '#75668c', '#8b684b', '#47708a']
 
@@ -46,6 +44,7 @@ export function loadRealtimeProfile(): RealtimeProfile {
           displayName: normalizeDisplayName(value.displayName),
           handle: normalizeHandle(value.handle),
           avatarColor: value.avatarColor,
+          ...(normalizeAvatarUrl(value.avatarUrl) ? { avatarUrl: normalizeAvatarUrl(value.avatarUrl) } : {}),
         }
       }
     }
@@ -68,34 +67,6 @@ export function saveRealtimeProfile(profile: RealtimeProfile) {
   storage()?.setItem(PROFILE_KEY, JSON.stringify(profile))
 }
 
-export function realtimeProfileToParticipant(profile: RealtimeProfile): Participant {
-  const initials = profile.displayName.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()
-  return {
-    id: `realtime:${profile.clientId}`,
-    kind: 'human',
-    displayName: profile.displayName,
-    handle: `@${profile.handle}`,
-    avatarFallback: initials || 'RT',
-    avatarColor: profile.avatarColor,
-    presence: 'online',
-    role: 'member',
-  }
-}
-
-export function realtimeRecordToMessage(record: RealtimeMessageRecord): HumanMessage {
-  return {
-    id: record.id,
-    conversationId: LIVE_CONVERSATION_ID,
-    senderId: `realtime:${record.clientId}`,
-    sentAt: record.sentAt,
-    ...(record.threadId ? { threadId: record.threadId } : {}),
-    deliveryState: 'sent',
-    reactions: [],
-    kind: 'human',
-    content: { text: record.text, format: 'markdown' },
-  }
-}
-
 let messageSequence = 0
 export function createRealtimeMessageId(clientId: string) {
   messageSequence += 1
@@ -112,6 +83,7 @@ export function realtimeWebSocketUrl(profile: RealtimeProfile) {
   url.searchParams.set('displayName', profile.displayName)
   url.searchParams.set('handle', profile.handle)
   url.searchParams.set('avatarColor', profile.avatarColor)
+  if (profile.avatarUrl) url.searchParams.set('avatarUrl', profile.avatarUrl)
   return url.toString()
 }
 
@@ -125,7 +97,9 @@ export class RealtimeRoomClient {
   constructor(
     private readonly profile: RealtimeProfile,
     private readonly handlers: RealtimeClientHandlers,
-    private readonly socketFactory: SocketFactory = (url) => new WebSocket(url),
+    private readonly socketFactory: SocketFactory = (url, protocols) => new WebSocket(url, protocols),
+    private readonly sessionToken?: string,
+    private readonly canSend = true,
   ) {}
 
   connect() {
@@ -141,6 +115,7 @@ export class RealtimeRoomClient {
   }
 
   send(message: RealtimeClientEvent['message']) {
+    if (!this.canSend) return
     if (!this.outbox.some((item) => item.id === message.id)) this.outbox.push(message)
     this.persistOutbox()
     this.flushOutbox()
@@ -153,7 +128,8 @@ export class RealtimeRoomClient {
       return
     }
     this.handlers.onStatus(this.reconnectAttempt === 0 ? 'syncing' : 'offline')
-    const socket = this.socketFactory(realtimeWebSocketUrl(this.profile))
+    const protocols = this.sessionToken ? ['vct-realtime', `vct.auth.${this.sessionToken}`] : undefined
+    const socket = this.socketFactory(realtimeWebSocketUrl(this.profile), protocols)
     this.socket = socket
     socket.addEventListener('open', () => {
       if (socket !== this.socket) return
@@ -187,6 +163,7 @@ export class RealtimeRoomClient {
   }
 
   private flushOutbox() {
+    if (!this.canSend) return
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return
     for (const message of this.outbox) {
       this.socket.send(JSON.stringify({ type: 'send', message } satisfies RealtimeClientEvent))

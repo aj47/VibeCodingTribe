@@ -3,8 +3,6 @@ import type { RealtimeServerEvent } from '../realtime/protocol'
 import {
   createRealtimeMessageId,
   loadRealtimeProfile,
-  realtimeProfileToParticipant,
-  realtimeRecordToMessage,
   RealtimeRoomClient,
   saveRealtimeProfile,
 } from './realtime'
@@ -37,15 +35,15 @@ describe('RealtimeRoomClient', () => {
     window.localStorage.clear()
   })
 
-  it('persists browser identity and maps it to a room participant', () => {
+  it('persists the browser identity used for realtime connections', () => {
     const profile = loadRealtimeProfile()
-    saveRealtimeProfile({ ...profile, displayName: 'AJ', handle: 'aj47' })
+    saveRealtimeProfile({ ...profile, displayName: 'AJ', handle: 'aj47', avatarUrl: 'https://avatars.example/aj.png' })
     const restored = loadRealtimeProfile()
-    const participant = realtimeProfileToParticipant(restored)
 
     expect(restored.displayName).toBe('AJ')
-    expect(participant.id).toBe(`realtime:${profile.clientId}`)
-    expect(participant.handle).toBe('@aj47')
+    expect(restored.clientId).toBe(profile.clientId)
+    expect(restored.handle).toBe('aj47')
+    expect(restored.avatarUrl).toBe('https://avatars.example/aj.png')
   })
 
   it('queues a message until connected and clears it after server confirmation', () => {
@@ -79,7 +77,47 @@ describe('RealtimeRoomClient', () => {
     socket.receive({ type: 'message', message: record })
     expect(events).toHaveLength(1)
     expect(statuses).toContain('connected')
-    expect(realtimeRecordToMessage(record).deliveryState).toBe('sent')
+    client.disconnect()
+    vi.unstubAllGlobals()
+  })
+
+  it('sends an authenticated session through the WebSocket subprotocol', () => {
+    const profile = loadRealtimeProfile()
+    const socket = new FakeWebSocket()
+    const socketFactory = vi.fn(() => socket as unknown as WebSocket)
+    const client = new RealtimeRoomClient(
+      profile,
+      { onEvent: () => undefined, onStatus: () => undefined },
+      socketFactory,
+      'signed.session-token',
+    )
+
+    client.connect()
+
+    expect(socketFactory).toHaveBeenCalledWith(expect.any(String), [
+      'vct-realtime',
+      'vct.auth.signed.session-token',
+    ])
+    client.disconnect()
+  })
+
+  it('keeps public viewer sockets read-only', () => {
+    const profile = loadRealtimeProfile()
+    const socket = new FakeWebSocket()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RealtimeRoomClient(
+      profile,
+      { onEvent: () => undefined, onStatus: () => undefined },
+      () => socket as unknown as WebSocket,
+      undefined,
+      false,
+    )
+
+    client.send({ id: createRealtimeMessageId(profile.clientId), text: 'should not send' })
+    client.connect()
+    socket.open()
+
+    expect(socket.sent).toHaveLength(0)
     client.disconnect()
     vi.unstubAllGlobals()
   })

@@ -1,96 +1,122 @@
-# VibeCodingTribe MVP
+# VibeCodingTribe Testing Exchange
 
-A runnable, chat-first vertical slice of the VibeCodingTribe PRD: an attention-managed developer room where humans, GitHub events, and coding agents share persistent repository context.
+VibeCodingTribe is a credit-based exchange where builders test each other’s products. The exchange lives at `/exchange`; the public Tribe Chat remains at [`/r/general`](https://vibecodingtribe.com/r/general).
 
-## Run it
+Missions, claims, feedback, credits, and planning artifacts use an authenticated Worker API backed by a transactional Cloudflare Durable Object. There are no seeded users, guest credit accounts, or reset commands. This is a real server-authoritative MVP, but it is not yet ready for unrestricted public launch—see [Current boundary](#current-boundary).
+
+## What works
+
+### Server-backed testing exchange
+
+- LinkedIn/GitHub-backed builder identities, skills, devices, and reputation signals
+- 10-credit starter grants represented as balanced, append-only postings
+- Product + mission creation and 10-credit escrow funding
+- Mission discovery, self-testing prevention, one-active-claim enforcement, and a 48-hour deadline
+- Structured feedback with severity, expected/actual behavior, recommendation, and evidence URL
+- Requester review through Needs You
+- Atomic 8-credit tester reward + 2-credit platform sink settlement
+- Immutable transaction views and derived balances
+- Accepted-feedback-only conversion into draft tasks through a deterministic, read-only server planning adapter
+- Authenticated, idempotent exchange commands with atomic Durable Object transactions
+- Server-derived ownership; browsers cannot choose requester or tester identities in production
+- Lazy abandoned-claim expiry and projected per-user API responses
+
+### Existing production services
+
+- One public server and canonical room at `/r/general`
+- Public read access without an account
+- Authenticated posting with GitHub OAuth or LinkedIn OpenID Connect
+- Persistent signed browser sessions refreshed for up to 30 days
+- Realtime WebSocket messages
+- Live presence and participant identities
+- Optimistic sending, retry, and a reconnecting browser outbox
+- Durable history of the latest 200 accepted messages
+- Responsive desktop and mobile layouts
+
+GitHub and LinkedIn sign-in establish the identity displayed in chat. They do not prove community membership or grant repository access.
+
+## Room visibility model
+
+- **Public rooms** can be read by anyone. Posting requires an authenticated identity.
+- **Private rooms** are the member-only model for future servers and rooms. They will require authorization to read or post and are not implemented yet.
+
+## Run locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:4173](http://localhost:4173). The seeded workspace opens directly so the core product can be evaluated immediately. Use **Profile → Sign out** to exercise GitHub sign-in and the three-step onboarding flow.
-
-Run the one-room realtime backend in a second terminal:
+The client runs at [http://localhost:4173](http://localhost:4173). Run the Worker in another terminal before testing the exchange or realtime chat:
 
 ```bash
+cp .dev.vars.example .dev.vars
 npm run dev:realtime
 ```
 
-The local client connects to `localhost:8787`; the production client connects to the deployed Cloudflare Worker.
+The local Worker runs at `http://localhost:8787`. Exchange writes and chat posting require a real LinkedIn or GitHub session in every environment. Open the exchange at [http://localhost:4173/exchange](http://localhost:4173/exchange).
 
-The production preview is deployed to [vibecodingtribe.pages.dev](https://vibecodingtribe.pages.dev) with Cloudflare Pages. An authenticated Wrangler session can rebuild and deploy the current checkout with:
+## Authentication
 
-```bash
-npm run deploy:cloudflare
-npm run deploy:realtime
+Production callbacks:
+
+```text
+https://vibecodingtribe-realtime.techfren.workers.dev/auth/github/callback
+https://vibecodingtribe-realtime.techfren.workers.dev/auth/linkedin/callback
 ```
 
-The full product, architecture, protocol, deployment, operations, security, and launch documentation is published at [docs.vibecodingtribe.com](https://docs.vibecodingtribe.com). Run or deploy the separate docs application with:
+The Worker requires these secrets:
 
-```bash
-npm run dev:docs
-npm run build:docs
-npm run deploy:docs
+```text
+SESSION_SECRET
+GITHUB_CLIENT_ID
+GITHUB_CLIENT_SECRET
+LINKEDIN_CLIENT_ID
+LINKEDIN_CLIENT_SECRET
 ```
 
-The command targets the `vibecodingtribe` Pages project and its `main` production branch. Local Cloudflare credentials and development variables are ignored by Git.
-
-Quality commands:
-
-```bash
-npm run typecheck
-npm run lint
-npm test
-npm run build
-```
-
-## Implemented in this slice
-
-- Five-section attention rail: Needs You, Active, Waiting, Repositories, and DMs
-- Transparent attention reasons, handled state, unread state, active-agent beacons, and persisted room switching
-- Virtualized Matrix-shaped timeline with human messages, code, reactions, agent work, tool logs, artifacts, GitHub events, and system events
-- Return Brief at the last-read boundary with decision, agent, GitHub, request, and blocker sources
-- Thread pane with a separate persisted draft
-- First-class agent states, scoped run permissions, continuous-listening control, stop/detach actions, and activity log
-- Repository-write approval with exact tool, scope, consequence, risk, audit details, allow-once, and deny paths
-- Deterministic local agent streaming and a gated mock GitHub branch-write result
-- Fast local echo, retry state, file attachment affordance, mentions, reactions, and per-room drafts
-- Durable realtime messages, reconnecting outbox, browser identity, live presence, and persisted history for `aj47/VibeCodingTribe#general`
-- Room search, global quick switcher, URL-backed room/thread/panel location, and keyboard shortcuts
-- GitHub sign-in presentation, guided onboarding, repository connection, profile, and safety defaults
-- Desktop, tablet, and narrow responsive layouts with mobile drawer navigation
-
-Useful shortcuts:
-
-| Shortcut | Action |
-| --- | --- |
-| `⌘/Ctrl K` | Quick switcher |
-| `⌘/Ctrl F` | Search current room |
-| `g`, then `n` | Next Needs You item |
-| `g`, then `a` | Next Active item |
-| `g`, then `r` | Open current repository |
-| `c` | Focus composer |
-| `a` | Open agent actions |
-| `h` | Mark current item handled |
-| `⌘/Ctrl .` | Stop foreground agent |
+GitHub requests `read:user`. LinkedIn requests `openid profile`. Provider access tokens are only used to resolve identity and are not retained.
 
 ## Architecture
 
-The UI consumes normalized product records from [`src/domain/types.ts`](src/domain/types.ts), never raw transport objects or GitHub payloads. [`src/services/adapters.ts`](src/services/adapters.ts) defines the broader Matrix, GitHub, and agent seams. The launch room uses a dedicated realtime client and protocol shared with the Worker.
-
 ```text
-React product UI on Cloudflare Pages
-  ├── RealtimeRoomClient ── WebSocket ── Cloudflare Worker
-  │                                      └── Durable Object (one room)
-  │                                          ├── live sockets/presence
-  │                                          └── persisted message history
-  ├── GitHubAdapter  → seeded events, checks, approved-write contract
-  └── AgentAdapter   → deterministic sessions, streams, approvals, activity
+React client on Cloudflare Pages
+  ├── ExchangeApiClient
+  │     └── authenticated HTTP commands
+  │           └── Cloudflare Worker
+  │                 └── ExchangeStore Durable Object
+  │                       ├── missions, claims, and feedback
+  │                       ├── append-only credit postings
+  │                       ├── idempotency records
+  │                       └── draft planning artifacts
+  └── RealtimeRoomClient
+        └── public read-only or authenticated WebSocket
+              └── Cloudflare Worker
+                    └── RealtimeRoom Durable Object
+                          ├── connected participants
+                          └── latest 200 messages
 ```
 
-The realtime room is pinned to `aj47/VibeCodingTribe#general`. Messages use optimistic local echo, are queued across disconnects, deduplicated by client message ID, broadcast over WebSockets, and replayed from the room's durable history. The rest of the workspace persists in `localStorage` so drafts, approvals, agent state, handled items, and selected context survive reloads.
+The Worker derives the exchange actor and chat identity from the signed OAuth session. Exchange mutations require idempotency keys and run in Durable Object storage transactions. Anonymous sockets can receive public chat history, messages, and presence but cannot send.
 
-## Honest MVP boundary
+## Commands
 
-This is a deployable one-room MVP, not yet a multi-tenant production system. Live chat currently uses a browser-generated guest identity; GitHub OAuth/App installation, authenticated membership, webhook ingestion, realtime reactions/typing/threads, media storage, a sandboxed agent runtime, secrets management, moderation, and server-side audit/authorization enforcement remain launch work. Other rooms and GitHub/agent events are product-demo data. See [`docs/implementation-status.md`](docs/implementation-status.md) for the handoff map.
+```bash
+npm run typecheck
+npx tsc -p tsconfig.worker.json --noEmit
+npm run lint
+npm test
+npm run build
+npm run build:docs
+npm run deploy:realtime
+npm run deploy:cloudflare
+npm run deploy:docs
+```
+
+## Current boundary
+
+The exchange is now authoritative on the server for its implemented flow. Credits are closed-loop application credits, not money, purchases, or withdrawals. Before unrestricted public launch, the product still needs account linking, LinkedIn nonce validation, R2-backed evidence uploads, proactive scheduled expiry, reject/clarify/dispute/admin paths, editable profiles, rate limits, abuse controls, observability, and recovery procedures. The current single Durable Object stores one aggregate JSON snapshot, which is appropriate for the first cohort but must be sharded or normalized before high-volume growth. Planning artifacts are drafts only and agents never receive repository access.
+
+The full reuse assessment, proposed data model, lifecycle, authentication plan, agent boundary, and productionization sequence are in [`docs/testing-exchange-mvp.md`](docs/testing-exchange-mvp.md).
+
+See [`docs/implementation-status.md`](docs/implementation-status.md) for the implementation handoff.

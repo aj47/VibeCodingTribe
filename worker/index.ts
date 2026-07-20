@@ -1,22 +1,26 @@
 import type { RealtimeMessageRecord, RealtimeProfile, RealtimeServerEvent } from '../src/realtime/protocol'
 import {
-  LIVE_CHANNEL,
-  LIVE_REPOSITORY,
+  LIVE_ROOM_KEY,
+  normalizeAvatarUrl,
   normalizeDisplayName,
   normalizeHandle,
   parseRealtimeClientEvent,
 } from '../src/realtime/protocol'
+import { authenticateRequest, handleAuthRequest, realtimeClientId, type AuthEnv } from './auth'
+import type { ExchangeActor } from './exchange'
+export { ExchangeStore } from './exchange'
 
-interface Env {
+interface Env extends AuthEnv {
   LIVE_ROOM: DurableObjectNamespace
-  ALLOWED_ORIGINS: string
+  EXCHANGE_STATE: DurableObjectNamespace
 }
 
 interface ConnectionAttachment extends RealtimeProfile {
   joinedAt: string
+  canSend: boolean
 }
 
-const ROOM_NAME = `${LIVE_REPOSITORY}#${LIVE_CHANNEL}`
+const ROOM_NAME = LIVE_ROOM_KEY
 const HISTORY_KEY = 'messages'
 const HISTORY_LIMIT = 200
 
@@ -42,16 +46,84 @@ function isAllowedOrigin(request: Request, allowedOrigins: string) {
   }
 }
 
+function exchangeCorsHeaders(request: Request, env: Env) {
+  const headers = new Headers({ 'Cache-Control': 'no-store' })
+  const origin = request.headers.get('Origin')
+  if (origin && isAllowedOrigin(request, env.ALLOWED_ORIGINS)) {
+    headers.set('Access-Control-Allow-Origin', origin)
+    headers.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key')
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    headers.set('Vary', 'Origin')
+  }
+  return headers
+}
+
+async function exchangeActor(request: Request, env: Env): Promise<ExchangeActor | null> {
+  const session = await authenticateRequest(request, env)
+  if (session) return {
+    user: {
+      id: `${session.provider}:${session.subject}`,
+      displayName: session.displayName,
+      handle: session.handle,
+      provider: session.provider,
+      headline: 'Verified builder',
+      skills: [],
+      devices: [],
+      avatarColor: session.provider === 'github' ? '#9bcf66' : '#70a8c4',
+    },
+  }
+  return null
+}
+
+async function handleExchangeRequest(request: Request, env: Env) {
+  const cors = exchangeCorsHeaders(request, env)
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
+  if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return Response.json({ error: 'Origin not allowed' }, { status: 403, headers: cors })
+  const actor = await exchangeActor(request, env)
+  if (!actor) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+
+  const headers = new Headers(request.headers)
+  headers.set('X-VCT-Exchange-Actor', encodeURIComponent(JSON.stringify(actor)))
+  const exchangeRequest = new Request(request, { headers })
+  const exchangeId = env.EXCHANGE_STATE.idFromName('vibecodingtribe.com/exchange')
+  const response = await env.EXCHANGE_STATE.get(exchangeId).fetch(exchangeRequest)
+  const responseHeaders = new Headers(response.headers)
+  for (const [key, value] of cors) responseHeaders.set(key, value)
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders })
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
+    const authResponse = await handleAuthRequest(request, env)
+    if (authResponse) return authResponse
+    if (url.pathname === '/api/exchange') return handleExchangeRequest(request, env)
     if (url.pathname === '/health') {
-      return json({ status: 'ok', room: ROOM_NAME, transport: 'durable-object-websocket' })
+      return json({
+        status: 'ok',
+        room: ROOM_NAME,
+        visibility: 'public',
+        access: { read: 'everyone', post: 'authenticated' },
+        transport: 'durable-object-websocket',
+        authentication: env.SESSION_SECRET ? 'configured' : 'unconfigured',
+      })
     }
     if (url.pathname !== '/api/realtime') return json({ error: 'Not found' }, 404)
     if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return json({ error: 'Origin not allowed' }, 403)
+    const session = await authenticateRequest(request, env)
+    const roomUrl = new URL(request.url)
+    const canSend = Boolean(session)
+    if (session) {
+      roomUrl.searchParams.set('clientId', await realtimeClientId(session))
+      roomUrl.searchParams.set('displayName', session.displayName)
+      roomUrl.searchParams.set('handle', session.handle)
+      roomUrl.searchParams.set('avatarColor', session.provider === 'github' ? '#657c54' : '#47708a')
+      if (session.avatarUrl) roomUrl.searchParams.set('avatarUrl', session.avatarUrl)
+    }
+    roomUrl.searchParams.set('canSend', canSend ? 'true' : 'false')
+    const roomRequest = new Request(roomUrl, request)
     const roomId = env.LIVE_ROOM.idFromName(ROOM_NAME)
-    return env.LIVE_ROOM.get(roomId).fetch(request)
+    return env.LIVE_ROOM.get(roomId).fetch(roomRequest)
   },
 } satisfies ExportedHandler<Env>
 
@@ -70,7 +142,11 @@ export class RealtimeRoom implements DurableObject {
     const pair = new WebSocketPair()
     const client = pair[0]
     const server = pair[1]
-    const attachment: ConnectionAttachment = { ...profile, joinedAt: new Date().toISOString() }
+    const attachment: ConnectionAttachment = {
+      ...profile,
+      joinedAt: new Date().toISOString(),
+      canSend: url.searchParams.get('canSend') === 'true',
+    }
     server.serializeAttachment(attachment)
     this.state.acceptWebSocket(server)
 
@@ -83,7 +159,11 @@ export class RealtimeRoom implements DurableObject {
     })
     this.broadcastPresence()
 
-    return new Response(null, { status: 101, webSocket: client })
+    const requestedProtocols = request.headers.get('Sec-WebSocket-Protocol') ?? ''
+    const headers = requestedProtocols.split(',').some((value) => value.trim() === 'vct-realtime')
+      ? { 'Sec-WebSocket-Protocol': 'vct-realtime' }
+      : undefined
+    return new Response(null, { status: 101, webSocket: client, headers })
   }
 
   async webSocketMessage(socket: WebSocket, payload: string | ArrayBuffer) {
@@ -111,6 +191,10 @@ export class RealtimeRoom implements DurableObject {
       this.send(socket, { type: 'error', message: 'Connection identity was unavailable', clientMessageId: event.message.id })
       return
     }
+    if (!profile.canSend) {
+      this.send(socket, { type: 'error', message: 'Sign in with GitHub or LinkedIn to send messages', clientMessageId: event.message.id })
+      return
+    }
 
     const history = (await this.state.storage.get<RealtimeMessageRecord[]>(HISTORY_KEY)) ?? []
     const existing = history.find((message) => message.id === event.message.id)
@@ -125,9 +209,9 @@ export class RealtimeRoom implements DurableObject {
       displayName: profile.displayName,
       handle: profile.handle,
       avatarColor: profile.avatarColor,
+      ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
       text: event.message.text,
       sentAt: new Date().toISOString(),
-      ...(event.message.threadId ? { threadId: event.message.threadId } : {}),
     }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
@@ -146,20 +230,22 @@ export class RealtimeRoom implements DurableObject {
     const displayName = normalizeDisplayName(url.searchParams.get('displayName') ?? '')
     const handle = normalizeHandle(url.searchParams.get('handle') ?? '')
     const avatarColor = url.searchParams.get('avatarColor')?.trim().slice(0, 32) ?? '#6f8f65'
+    const avatarUrl = normalizeAvatarUrl(url.searchParams.get('avatarUrl'))
     if (!clientId || !/^[a-zA-Z0-9_-]{8,80}$/.test(clientId) || !displayName) return null
-    return { clientId, displayName, handle, avatarColor }
+    return { clientId, displayName, handle, avatarColor, ...(avatarUrl ? { avatarUrl } : {}) }
   }
 
   private connectedParticipants() {
     const participants = new Map<string, RealtimeProfile>()
     for (const socket of this.state.getWebSockets()) {
       const attachment = socket.deserializeAttachment() as ConnectionAttachment | null
-      if (!attachment) continue
+      if (!attachment?.canSend) continue
       participants.set(attachment.clientId, {
         clientId: attachment.clientId,
         displayName: attachment.displayName,
         handle: attachment.handle,
         avatarColor: attachment.avatarColor,
+        ...(attachment.avatarUrl ? { avatarUrl: attachment.avatarUrl } : {}),
       })
     }
     return [...participants.values()]

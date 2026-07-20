@@ -1,45 +1,70 @@
-# MVP implementation status
+# Implementation status
 
-This build proves the PRD's three product claims with one deployed realtime room:
+## Server-backed testing exchange
 
-1. Chat is the primary, fast interaction surface.
-2. The attention rail points users back to actionable work.
-3. Agents participate visibly in shared repository context with explicit permissions.
+- Canonical route: `/exchange`
+- Product and funded mission creation
+- 10-credit starter grant and double-entry escrow postings
+- Cross-user claim with self-testing and active-claim guards
+- Structured feedback and evidence URL
+- Derived Needs You action inbox
+- Requester acceptance and 8 + 2 credit settlement
+- Raw tester/requester reputation signals
+- Immutable transaction display
+- Accepted-feedback-only server planning adapter with draft task artifacts
+- Transactional Durable Object persistence for the exchange aggregate
+- Authenticated Worker API with server-derived actors and command authorization
+- Required idempotency keys with stored command fingerprints and conflict detection
+- Lazy 48-hour abandoned-claim expiry
+- Per-actor state projection from the API
+- OAuth required for every credit-bearing account and exchange command
+- Empty first-use state with no seeded users, products, missions, or feedback
+- Full happy-path domain, Durable Object, Worker-route, API-client, and rendered-component tests
 
-## Working end to end
+The browser is no longer an authority for exchange state. The Worker and Durable Object enforce mission ownership, self-testing prevention, claim limits, accepted-feedback-only planning, and atomic 8 + 2 settlement. Local persona switching remains only an evaluation affordance.
 
-- Room switching with cached state, local echo, drafts, reactions, search, code, artifacts, threads, and virtualized rendering
-- Rules-based attention ranking and reason labels across all five required sections
-- Return-summary display, source jumps, dismissal, regeneration, and handled state
-- Agent invoke → working → streaming → completed state machine
-- Continuous-listening indicator and session permission display
-- Approval request → allow once/deny → agent state transition → scoped mock GitHub write → result/audit trail
-- GitHub PR/check event cards and repository context
-- Sign-in, onboarding, repository selection, and agent-default setup presentation
-- Responsive navigation/details/thread behavior and keyboard navigation
-- Browser persistence for the selected room, messages, drafts, attention, approvals, agents, summaries, and audit state
-- Cross-browser WebSocket chat for `aj47/VibeCodingTribe#general`, including local echo, reconnecting outbox, deduplication, live presence, and durable history
-- Cloudflare Pages frontend plus a Cloudflare Worker and SQLite-backed Durable Object room
+## Live end to end
 
-## Ready behind an adapter; requires production service wiring
+- Canonical room route: `vibecodingtribe.com/r/general`
+- Anonymous read access to the public room
+- Server-enforced authenticated posting
+- GitHub OAuth with state and PKCE
+- LinkedIn OpenID Connect
+- Persistent signed room sessions refreshed to a 30-day lifetime during validation
+- Server-derived message identity
+- Authenticated WebSocket connection in production
+- Local-only guest preview for development
+- Optimistic message sending and retry
+- Browser-persisted reconnecting outbox
+- Message-ID deduplication
+- Live presence and participant list
+- Durable Object history, bounded to 200 messages
+- Responsive desktop and mobile interfaces
 
-| PRD area | Client/contract present | Production work |
-| --- | --- | --- |
-| Realtime chat | One deployed Durable Object room, shared protocol, reconnecting client | Authenticated membership, moderation, multi-room routing, realtime threads/reactions/typing, media |
-| Matrix migration | `MatrixAdapter`, normalized events, UI states | Optional Synapse deployment, authentication/provisioning, sync, E2EE decision |
-| GitHub identity | Sign-in/onboarding UI and repository model | OAuth callback, GitHub App installation, encrypted token storage |
-| GitHub activity | Event/check models and cards | Webhook receiver, signature verification, replay/idempotency, rate limits |
-| GitHub writes | Scoped approval enforcement in adapter | Server-side authorization, branch/comment API calls, immutable audit |
-| Agent runtime | Session/stream/stop/approval contract | Provider credentials, sandbox, MCP connections, queues, stream gateway |
-| Attention engine | Transparent client ranking and persistence | Per-user server ranking, realtime recomputation, mute/snooze/order APIs |
-| Return summaries | Structured summary contract and states | Grounded model call, privacy/retention policy, source-event validation |
-| Storage | Durable room history plus browser workspace persistence | Account/profile storage, object storage, retention policy, exports and backups |
+## Still required before unrestricted production access
 
-## Recommended next implementation sequence
+- Durable internal user records, OAuth account linking, and protection against duplicate grants across providers
+- LinkedIn nonce validation and user-facing session management/revocation
+- Reject, clarify, dispute, and admin-resolution command paths
+- Proactive scheduled abandoned-claim expiry and expiring-claim notifications
+- R2-backed screenshot and recording uploads
+- Editable builder profile onboarding
+- Multi-mission discovery, pagination, search, and filtering
+- Product-scoped realtime threads
+- External Codex, Claude Code, OpenCode, Pi, or DotAgents provider calls
+- Any automatic repository modification
+- API rate limiting, abuse controls, audit export, and operational dashboards/alerts
+- Backup/restore exercises and a documented dispute/credit recovery procedure
+- A sharded or normalized persistence model before the single aggregate becomes a scale bottleneck
 
-1. Add GitHub OAuth/App installation and require an authenticated repository member before joining the room.
-2. Add Cloudflare webhook ingestion for real pull request, check, issue, and push events from `aj47/VibeCodingTribe`.
-3. Move profiles, attention, visit state, permissions, approvals, and audit records to server-side storage.
-4. Add the agent orchestration service with WebSocket streaming and a repository-read MCP tool.
-5. Enable one server-enforced GitHub comment or branch action behind the existing approval record.
-6. Add moderation/retention controls and integration/load suites for reconnects, history, and message bursts before adding more rooms.
+Credits remain closed-loop application units. Purchases, cash value, and withdrawals are deliberately out of scope.
+
+## Before broader access
+
+1. Add rate limiting, reporting, blocking, and moderation.
+2. Add session revocation, account linking, and user-facing session controls.
+3. Define and implement message retention, deletion, and export.
+4. Add observability for socket failures, reconnects, message latency, and abuse.
+5. Implement private-room membership and authorization before exposing any private-room route.
+
+Any new product capability should enter the interface only after its backend, authorization model, empty state, failure state, tests, and operational owner exist.

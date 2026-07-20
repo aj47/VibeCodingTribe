@@ -11,10 +11,10 @@ describe('realtime protocol', () => {
   it('normalizes a valid outbound message', () => {
     expect(parseRealtimeClientEvent({
       type: 'send',
-      message: { id: 'rt_client_12345678_1', text: '  hello room  ', threadId: 'thread-1' },
+      message: { id: 'rt_client_12345678_1', text: '  hello room  ' },
     })).toEqual({
       type: 'send',
-      message: { id: 'rt_client_12345678_1', text: 'hello room', threadId: 'thread-1' },
+      message: { id: 'rt_client_12345678_1', text: 'hello room' },
     })
   })
 
@@ -30,22 +30,23 @@ describe('realtime protocol', () => {
     const message = {
       id: 'rt_client_12345678_3',
       clientId: 'client_12345678',
-      displayName: 'Maya',
-      handle: 'maya',
+      displayName: 'Local Builder',
+      handle: 'local-builder',
       avatarColor: '#657c54',
+      avatarUrl: 'https://avatars.example/builder.png',
       text: 'live now',
       sentAt: '2026-07-18T20:00:00.000Z',
     }
     expect(parseRealtimeServerEvent({
       type: 'snapshot',
       messages: [message],
-      participants: [{ clientId: 'client_12345678', displayName: 'Maya', handle: 'maya', avatarColor: '#657c54' }],
+      participants: [{ clientId: 'client_12345678', displayName: 'Local Builder', handle: 'local-builder', avatarColor: '#657c54', avatarUrl: 'https://avatars.example/builder.png' }],
       onlineCount: 1,
     })?.type).toBe('snapshot')
   })
 
   it('keeps identity labels compact and safe', () => {
-    expect(normalizeDisplayName('  Maya   Chen  ')).toBe('Maya Chen')
-    expect(normalizeHandle('@maya chen!')).toBe('mayachen')
+    expect(normalizeDisplayName('  Local   Builder  ')).toBe('Local Builder')
+    expect(normalizeHandle('@local builder!')).toBe('localbuilder')
   })
 })

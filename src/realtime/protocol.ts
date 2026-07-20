@@ -1,6 +1,4 @@
-export const LIVE_CONVERSATION_ID = 'conversation-vct-general'
-export const LIVE_REPOSITORY = 'aj47/VibeCodingTribe'
-export const LIVE_CHANNEL = 'general'
+export const LIVE_ROOM_KEY = 'vibecodingtribe.com/r/general'
 export const MAX_REALTIME_MESSAGE_LENGTH = 4_000
 
 export interface RealtimeProfile {
@@ -8,6 +6,7 @@ export interface RealtimeProfile {
   displayName: string
   handle: string
   avatarColor: string
+  avatarUrl?: string
 }
 
 export interface RealtimeMessageRecord {
@@ -16,9 +15,9 @@ export interface RealtimeMessageRecord {
   displayName: string
   handle: string
   avatarColor: string
+  avatarUrl?: string
   text: string
   sentAt: string
-  threadId?: string
 }
 
 export interface RealtimeSendEvent {
@@ -26,7 +25,6 @@ export interface RealtimeSendEvent {
   message: {
     id: string
     text: string
-    threadId?: string
   }
 }
 
@@ -56,20 +54,28 @@ export function normalizeHandle(value: string) {
   return normalized || 'builder'
 }
 
+export function normalizeAvatarUrl(value: unknown) {
+  if (typeof value !== 'string' || value.length > 2_048) return undefined
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.toString() : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | null {
   if (!isRecord(value) || value.type !== 'send' || !isRecord(value.message)) return null
-  const { id, text, threadId } = value.message
+  const { id, text } = value.message
   if (typeof id !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(id)) return null
   if (typeof text !== 'string') return null
   const trimmed = text.trim()
   if (!trimmed || trimmed.length > MAX_REALTIME_MESSAGE_LENGTH) return null
-  if (threadId !== undefined && typeof threadId !== 'string') return null
   return {
     type: 'send',
     message: {
       id,
       text: trimmed,
-      ...(threadId ? { threadId: threadId.slice(0, 160) } : {}),
     },
   }
 }
@@ -111,6 +117,7 @@ export function isRealtimeProfile(value: unknown): value is RealtimeProfile {
     && typeof value.displayName === 'string'
     && typeof value.handle === 'string'
     && typeof value.avatarColor === 'string'
+    && (value.avatarUrl === undefined || normalizeAvatarUrl(value.avatarUrl) !== undefined)
 }
 
 export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessageRecord {
@@ -120,7 +127,7 @@ export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessag
     && typeof value.displayName === 'string'
     && typeof value.handle === 'string'
     && typeof value.avatarColor === 'string'
+    && (value.avatarUrl === undefined || normalizeAvatarUrl(value.avatarUrl) !== undefined)
     && typeof value.text === 'string'
     && typeof value.sentAt === 'string'
-    && (value.threadId === undefined || typeof value.threadId === 'string')
 }
