@@ -27,14 +27,15 @@ interface ProcessedCommand {
 
 export interface ExchangeActor {
   user: ExchangeUser
+  agent?: { id: string; name: string }
 }
 
 type ExchangeCommand =
   | { type: 'create_mission'; input: CreateMissionInput }
   | { type: 'claim_mission'; input: { missionId: string } }
   | { type: 'submit_feedback'; input: { missionId: string; feedback: SubmitFeedbackInput } }
-  | { type: 'accept_feedback'; input: { missionId: string } }
-  | { type: 'convert_feedback_to_tasks'; input: { missionId: string } }
+  | { type: 'accept_feedback'; input: { missionId: string; feedbackId?: string } }
+  | { type: 'convert_feedback_to_tasks'; input: { missionId: string; feedbackId?: string } }
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } })
@@ -63,6 +64,10 @@ function boundedString(value: unknown, maxLength: number, required = true) {
   return normalized
 }
 
+function optionalString(value: unknown, maxLength: number) {
+  return value === undefined ? '' : boundedString(value, maxLength, false)
+}
+
 function httpUrl(value: unknown, required = true) {
   const normalized = boundedString(value, 2048, required)
   if (normalized === null) return null
@@ -76,30 +81,23 @@ function httpUrl(value: unknown, required = true) {
 }
 
 function parseCreateMissionInput(input: Record<string, unknown>): CreateMissionInput | null {
-  const productName = boundedString(input.productName, 100)
-  const productUrl = httpUrl(input.productUrl)
-  const productDescription = boundedString(input.productDescription, 1000, false)
-  const title = boundedString(input.title, 160)
-  const scenario = boundedString(input.scenario, 3000)
-  const successCriteria = boundedString(input.successCriteria, 3000)
-  const deviceRequirement = boundedString(input.deviceRequirement, 240, false)
+  const productName = optionalString(input.productName, 100)
+  const productUrl = input.productUrl === undefined ? '' : httpUrl(input.productUrl, false)
+  const productDescription = optionalString(input.productDescription, 1000)
+  const title = optionalString(input.title, 160)
+  const scenario = optionalString(input.scenario, 3000)
+  const successCriteria = optionalString(input.successCriteria, 3000)
+  const deviceRequirement = optionalString(input.deviceRequirement, 240)
   if ([productName, productUrl, productDescription, title, scenario, successCriteria, deviceRequirement].some((value) => value === null)) return null
   return { productName: productName!, productUrl: productUrl!, productDescription: productDescription!, title: title!, scenario: scenario!, successCriteria: successCriteria!, deviceRequirement: deviceRequirement! }
 }
 
 function parseFeedbackInput(input: Record<string, unknown>): SubmitFeedbackInput | null {
-  const summary = boundedString(input.summary, 300)
-  const stepsTaken = boundedString(input.stepsTaken, 4000)
-  const expectedResult = boundedString(input.expectedResult, 3000)
-  const actualResult = boundedString(input.actualResult, 3000)
-  const recommendation = boundedString(input.recommendation, 3000)
+  const note = optionalString(input.note, 8000)
   const evidenceUrl = input.evidenceUrl === undefined || input.evidenceUrl === '' ? '' : httpUrl(input.evidenceUrl)
-  const severity = input.severity
-  if ([summary, stepsTaken, expectedResult, actualResult, recommendation, evidenceUrl].some((value) => value === null)
-    || !['low', 'medium', 'high'].includes(String(severity))) return null
+  if ([note, evidenceUrl].some((value) => value === null)) return null
   return {
-    summary: summary!, stepsTaken: stepsTaken!, expectedResult: expectedResult!, actualResult: actualResult!,
-    severity: severity as SubmitFeedbackInput['severity'], recommendation: recommendation!,
+    note: note!,
     ...(evidenceUrl ? { evidenceUrl } : {}),
   }
 }
@@ -118,7 +116,12 @@ function parseCommand(value: unknown): ExchangeCommand | null {
     return missionId && feedback ? { type: value.type, input: { missionId, feedback } } : null
   }
   if (['accept_feedback', 'convert_feedback_to_tasks'].includes(value.type) && missionId) {
-    return { type: value.type as 'accept_feedback' | 'convert_feedback_to_tasks', input: { missionId } }
+    if (value.type === 'accept_feedback') {
+      const feedbackId = boundedString(input.feedbackId, 160)
+      return { type: 'accept_feedback' as const, input: feedbackId ? { missionId, feedbackId } : { missionId } }
+    }
+    const feedbackId = boundedString(input.feedbackId, 160)
+    return { type: 'convert_feedback_to_tasks' as const, input: feedbackId ? { missionId, feedbackId } : { missionId } }
   }
   return null
 }
@@ -128,14 +131,14 @@ function applyCommand(state: ExchangeState, actor: ExchangeActor, command: Excha
     case 'create_mission': return createMission(state, actor.user.id, command.input, now)
     case 'claim_mission': return claimMission(state, command.input.missionId, actor.user.id, now)
     case 'submit_feedback': return submitFeedback(state, command.input.missionId, actor.user.id, command.input.feedback, now)
-    case 'accept_feedback': return acceptFeedback(state, command.input.missionId, actor.user.id, now)
-    case 'convert_feedback_to_tasks': return convertAcceptedFeedbackToTasks(state, command.input.missionId, actor.user.id)
+    case 'accept_feedback': return acceptFeedback(state, command.input.missionId, actor.user.id, command.input.feedbackId, now)
+    case 'convert_feedback_to_tasks': return convertAcceptedFeedbackToTasks(state, command.input.missionId, actor.user.id, command.input.feedbackId)
   }
 }
 
 function projectStateForActor(state: ExchangeState, actorId: string): ExchangeState {
   const involvedMissionIds = new Set(state.missions
-    .filter((mission) => mission.status === 'open'
+    .filter((mission) => ['open', 'claimed', 'in_review', 'accepted'].includes(mission.status)
       || mission.requesterId === actorId
       || state.claims.some((claim) => claim.missionId === mission.id && claim.testerId === actorId))
     .map((mission) => mission.id))

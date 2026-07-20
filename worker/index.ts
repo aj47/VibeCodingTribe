@@ -7,12 +7,16 @@ import {
   parseRealtimeClientEvent,
 } from '../src/realtime/protocol'
 import { authenticateRequest, handleAuthRequest, realtimeClientId, type AuthEnv } from './auth'
+import { accountRequest } from './auth'
+import type { AgentAuthResult } from './accounts'
 import type { ExchangeActor } from './exchange'
 export { ExchangeStore } from './exchange'
+export { AccountStore } from './accounts'
 
 interface Env extends AuthEnv {
   LIVE_ROOM: DurableObjectNamespace
   EXCHANGE_STATE: DurableObjectNamespace
+  ACCOUNTS: DurableObjectNamespace
 }
 
 interface ConnectionAttachment extends RealtimeProfile {
@@ -52,7 +56,7 @@ function exchangeCorsHeaders(request: Request, env: Env) {
   if (origin && isAllowedOrigin(request, env.ALLOWED_ORIGINS)) {
     headers.set('Access-Control-Allow-Origin', origin)
     headers.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key')
-    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS')
     headers.set('Vary', 'Origin')
   }
   return headers
@@ -62,7 +66,7 @@ async function exchangeActor(request: Request, env: Env): Promise<ExchangeActor 
   const session = await authenticateRequest(request, env)
   if (session) return {
     user: {
-      id: `${session.provider}:${session.subject}`,
+      id: session.accountId ?? `${session.provider}:${session.subject}`,
       displayName: session.displayName,
       handle: session.handle,
       provider: session.provider,
@@ -73,6 +77,150 @@ async function exchangeActor(request: Request, env: Env): Promise<ExchangeActor 
     },
   }
   return null
+}
+
+function bearerToken(request: Request) {
+  const value = request.headers.get('Authorization')
+  return value?.startsWith('Bearer ') ? value.slice(7).trim() : null
+}
+
+async function agentActor(request: Request, env: Env): Promise<{ auth: AgentAuthResult; actor: ExchangeActor } | Response> {
+  const token = bearerToken(request)
+  if (!token?.startsWith('vct_agent_')) return Response.json({ error: 'An agent API key is required' }, { status: 401 })
+  const response = await accountRequest(env, '/credentials/authenticate', { token })
+  if (!response.ok) return response
+  const auth = await response.json() as AgentAuthResult
+  return {
+    auth,
+    actor: {
+      user: {
+        id: auth.owner.id,
+        displayName: auth.owner.displayName,
+        handle: auth.owner.handle,
+        provider: auth.owner.linkedProviders.includes('github') ? 'github' : 'linkedin',
+        headline: auth.owner.headline || 'Verified builder',
+        skills: [],
+        devices: [],
+        avatarColor: '#70a8c4',
+      },
+      agent: auth.agent,
+    },
+  }
+}
+
+function withApiHeaders(response: Response, request: Request, env: Env, auth?: AgentAuthResult) {
+  const headers = new Headers(response.headers)
+  for (const [key, value] of exchangeCorsHeaders(request, env)) headers.set(key, value)
+  if (auth) {
+    headers.set('X-RateLimit-Limit', String(auth.rateLimit.limit))
+    headers.set('X-RateLimit-Remaining', String(auth.rateLimit.remaining))
+    headers.set('X-RateLimit-Reset', auth.rateLimit.resetAt)
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+}
+
+async function handleAccountApi(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url)
+  const cors = exchangeCorsHeaders(request, env)
+  if (request.method === 'OPTIONS' && (url.pathname.startsWith('/api/agents') || url.pathname.startsWith('/api/profile'))) {
+    return new Response(null, { status: 204, headers: cors })
+  }
+  if (url.pathname === '/api/agent-bootstrap' && request.method === 'GET') {
+    const apiBaseUrl = url.origin
+    return Response.json({
+      name: 'VibeCodingTribe agent onboarding',
+      steps: [
+        `POST ${apiBaseUrl}/api/agents/enrollments with JSON { name, callbackUrl }`,
+        'Give the returned authorizationUrl to your human. Never open or approve it yourself.',
+        'Receive the API key once via an HTTPS POST to callbackUrl and store it as a secret.',
+        `Use Authorization: Bearer <apiKey> with ${apiBaseUrl}/api/v1/me, /api/v1/exchange, and /api/v1/room/messages.`,
+      ],
+      security: { keyDelivery: 'callback-only', rateLimit: '60 requests per minute per key', enrollmentLimit: '10 requests per hour per source', neverExposeKeys: true },
+    }, { headers: { ...Object.fromEntries(cors), 'Cache-Control': 'public, max-age=300' } })
+  }
+  if (url.pathname === '/api/agents/enrollments' && request.method === 'POST') {
+    if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return Response.json({ error: 'Origin not allowed' }, { status: 403, headers: cors })
+    const payload = await request.json().catch(() => null) as Record<string, unknown> | null
+    const response = await accountRequest(env, '/enrollments', {
+      ...(payload ?? {}),
+      requesterKey: request.headers.get('CF-Connecting-IP') ?? 'local-or-unknown',
+    })
+    if (!response.ok) return withApiHeaders(response, request, env)
+    const result = await response.json() as { enrollment: { id: string } }
+    return Response.json({
+      ...result,
+      authorizationUrl: `${env.AUTH_APP_ORIGIN}/agents/authorize/${result.enrollment.id}`,
+    }, { status: 201, headers: cors })
+  }
+  const enrollmentMatch = url.pathname.match(/^\/api\/agents\/enrollments\/([^/]+)(\/authorize)?$/)
+  if (enrollmentMatch && request.method === 'GET' && !enrollmentMatch[2]) {
+    return withApiHeaders(await accountRequest(env, `/enrollments/${encodeURIComponent(enrollmentMatch[1]!)}`), request, env)
+  }
+  if (enrollmentMatch?.[2] && request.method === 'POST') {
+    const claims = await authenticateRequest(request, env)
+    if (!claims) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+    return withApiHeaders(await accountRequest(env, `/enrollments/${encodeURIComponent(enrollmentMatch[1]!)}/authorize`, {
+      accountId: claims.accountId ?? `${claims.provider}:${claims.subject}`,
+    }), request, env)
+  }
+  if (url.pathname === '/api/profile' && ['GET', 'PATCH'].includes(request.method)) {
+    const claims = await authenticateRequest(request, env)
+    if (!claims) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+    const accountId = claims.accountId ?? `${claims.provider}:${claims.subject}`
+    if (request.method === 'GET') return withApiHeaders(await accountRequest(env, `/profile?accountId=${encodeURIComponent(accountId)}`), request, env)
+    const payload = await request.json().catch(() => ({})) as Record<string, unknown>
+    return withApiHeaders(await accountRequest(env, '/profile', { ...payload, accountId }, 'PATCH'), request, env)
+  }
+  const publicProfileMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)$/)
+  if (publicProfileMatch && request.method === 'GET') {
+    const profileId = decodeURIComponent(publicProfileMatch[1]!)
+    const path = profileId.startsWith('human_')
+      ? `/profile?accountId=${encodeURIComponent(profileId)}`
+      : `/profile/by-realtime?realtimeId=${encodeURIComponent(profileId)}`
+    const response = await accountRequest(env, path)
+    if (!response.ok) return withApiHeaders(response, request, env)
+    const { profile } = await response.json() as { profile: unknown }
+    return Response.json({ profile }, { headers: cors })
+  }
+  if (url.pathname === '/api/agents' && request.method === 'GET') {
+    const claims = await authenticateRequest(request, env)
+    if (!claims) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+    const accountId = claims.accountId ?? `${claims.provider}:${claims.subject}`
+    return withApiHeaders(await accountRequest(env, `/credentials?accountId=${encodeURIComponent(accountId)}`), request, env)
+  }
+  const credentialMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/(revoke|rotate)$/)
+  if (credentialMatch && request.method === 'POST') {
+    const claims = await authenticateRequest(request, env)
+    if (!claims) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+    return withApiHeaders(await accountRequest(env, `/credentials/${encodeURIComponent(credentialMatch[1]!)}/${credentialMatch[2]}`, {
+      accountId: claims.accountId ?? `${claims.provider}:${claims.subject}`,
+    }), request, env)
+  }
+  return null
+}
+
+async function handleAgentApi(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url)
+  const authenticated = await agentActor(request, env)
+  if (authenticated instanceof Response) return withApiHeaders(authenticated, request, env)
+  if (url.pathname === '/api/v1/me' && request.method === 'GET') {
+    return withApiHeaders(Response.json({ agent: authenticated.auth.agent, owner: authenticated.auth.owner }), request, env, authenticated.auth)
+  }
+  if (url.pathname === '/api/v1/exchange') {
+    const headers = new Headers(request.headers)
+    headers.set('X-VCT-Exchange-Actor', encodeURIComponent(JSON.stringify(authenticated.actor)))
+    const exchangeRequest = new Request(new URL('/api/exchange', request.url), { method: request.method, headers, body: request.method === 'GET' ? undefined : request.body })
+    const exchangeId = env.EXCHANGE_STATE.idFromName('vibecodingtribe.com/exchange')
+    return withApiHeaders(await env.EXCHANGE_STATE.get(exchangeId).fetch(exchangeRequest), request, env, authenticated.auth)
+  }
+  if (url.pathname === '/api/v1/room/messages' && ['GET', 'POST'].includes(request.method)) {
+    const headers = new Headers(request.headers)
+    headers.set('X-VCT-Agent-Actor', encodeURIComponent(JSON.stringify(authenticated.auth)))
+    const roomRequest = new Request(new URL('/internal/messages', request.url), { method: request.method, headers, body: request.method === 'GET' ? undefined : request.body })
+    const roomId = env.LIVE_ROOM.idFromName(ROOM_NAME)
+    return withApiHeaders(await env.LIVE_ROOM.get(roomId).fetch(roomRequest), request, env, authenticated.auth)
+  }
+  return withApiHeaders(Response.json({ error: 'Not found' }, { status: 404 }), request, env, authenticated.auth)
 }
 
 async function handleExchangeRequest(request: Request, env: Env) {
@@ -97,6 +245,9 @@ export default {
     const url = new URL(request.url)
     const authResponse = await handleAuthRequest(request, env)
     if (authResponse) return authResponse
+    const accountResponse = await handleAccountApi(request, env)
+    if (accountResponse) return accountResponse
+    if (url.pathname.startsWith('/api/v1/')) return handleAgentApi(request, env)
     if (url.pathname === '/api/exchange') return handleExchangeRequest(request, env)
     if (url.pathname === '/health') {
       return json({
@@ -118,6 +269,8 @@ export default {
       roomUrl.searchParams.set('displayName', session.displayName)
       roomUrl.searchParams.set('handle', session.handle)
       roomUrl.searchParams.set('avatarColor', session.provider === 'github' ? '#657c54' : '#47708a')
+      roomUrl.searchParams.set('profileId', session.accountId ?? `${session.provider}:${session.subject}`)
+      roomUrl.searchParams.set('actorType', 'human')
       if (session.avatarUrl) roomUrl.searchParams.set('avatarUrl', session.avatarUrl)
     }
     roomUrl.searchParams.set('canSend', canSend ? 'true' : 'false')
@@ -131,11 +284,12 @@ export class RealtimeRoom implements DurableObject {
   constructor(private readonly state: DurableObjectState) {}
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    if (url.pathname === '/internal/messages') return this.handleHttpMessages(request)
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return json({ error: 'Expected a WebSocket upgrade' }, 426)
     }
 
-    const url = new URL(request.url)
     const profile = this.profileFromUrl(url)
     if (!profile) return json({ error: 'A valid realtime profile is required' }, 400)
 
@@ -210,6 +364,9 @@ export class RealtimeRoom implements DurableObject {
       handle: profile.handle,
       avatarColor: profile.avatarColor,
       ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
+      ...(profile.profileId ? { profileId: profile.profileId } : {}),
+      ...(profile.actorType ? { actorType: profile.actorType } : {}),
+      ...(profile.ownerHandle ? { ownerHandle: profile.ownerHandle } : {}),
       text: event.message.text,
       sentAt: new Date().toISOString(),
     }
@@ -231,8 +388,11 @@ export class RealtimeRoom implements DurableObject {
     const handle = normalizeHandle(url.searchParams.get('handle') ?? '')
     const avatarColor = url.searchParams.get('avatarColor')?.trim().slice(0, 32) ?? '#6f8f65'
     const avatarUrl = normalizeAvatarUrl(url.searchParams.get('avatarUrl'))
+    const profileId = url.searchParams.get('profileId')?.trim().slice(0, 100)
+    const actorType = url.searchParams.get('actorType') === 'agent' ? 'agent' : 'human'
+    const ownerHandle = url.searchParams.get('ownerHandle')?.trim().slice(0, 32)
     if (!clientId || !/^[a-zA-Z0-9_-]{8,80}$/.test(clientId) || !displayName) return null
-    return { clientId, displayName, handle, avatarColor, ...(avatarUrl ? { avatarUrl } : {}) }
+    return { clientId, displayName, handle, avatarColor, ...(avatarUrl ? { avatarUrl } : {}), ...(profileId ? { profileId } : {}), actorType, ...(ownerHandle ? { ownerHandle } : {}) }
   }
 
   private connectedParticipants() {
@@ -246,9 +406,48 @@ export class RealtimeRoom implements DurableObject {
         handle: attachment.handle,
         avatarColor: attachment.avatarColor,
         ...(attachment.avatarUrl ? { avatarUrl: attachment.avatarUrl } : {}),
+        ...(attachment.profileId ? { profileId: attachment.profileId } : {}),
+        ...(attachment.actorType ? { actorType: attachment.actorType } : {}),
+        ...(attachment.ownerHandle ? { ownerHandle: attachment.ownerHandle } : {}),
       })
     }
     return [...participants.values()]
+  }
+
+  private async handleHttpMessages(request: Request) {
+    const encoded = request.headers.get('X-VCT-Agent-Actor')
+    if (!encoded) return json({ error: 'Agent identity unavailable' }, 401)
+    let auth: AgentAuthResult
+    try {
+      auth = JSON.parse(decodeURIComponent(encoded)) as AgentAuthResult
+    } catch {
+      return json({ error: 'Agent identity invalid' }, 401)
+    }
+    const history = (await this.state.storage.get<RealtimeMessageRecord[]>(HISTORY_KEY)) ?? []
+    if (request.method === 'GET') return json({ messages: history })
+    let body: { text?: string; id?: string }
+    try { body = await request.json() as { text?: string; id?: string } } catch { return json({ error: 'Invalid JSON body' }, 400) }
+    const text = body.text?.trim()
+    if (!text || text.length > 4_000) return json({ error: 'Message text must be 1-4000 characters' }, 400)
+    const id = body.id && /^[a-zA-Z0-9:_-]{8,160}$/.test(body.id) ? body.id : `agent:${auth.agent.id}:${crypto.randomUUID()}`
+    const existing = history.find((message) => message.id === id)
+    if (existing) return json({ message: existing })
+    const message: RealtimeMessageRecord = {
+      id,
+      clientId: `agent_${auth.agent.id}`,
+      displayName: auth.agent.name,
+      handle: `${auth.owner.handle}-agent`.slice(0, 32),
+      avatarColor: '#c8ddf0',
+      ...(auth.owner.avatarUrl ? { avatarUrl: auth.owner.avatarUrl } : {}),
+      profileId: auth.owner.id,
+      actorType: 'agent',
+      ownerHandle: auth.owner.handle,
+      text,
+      sentAt: new Date().toISOString(),
+    }
+    await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
+    this.broadcast({ type: 'message', message })
+    return json({ message }, 201)
   }
 
   private broadcastPresence() {

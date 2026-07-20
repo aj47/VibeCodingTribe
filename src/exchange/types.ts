@@ -54,13 +54,15 @@ export interface Feedback {
   missionId: string
   claimId: string
   testerId: UserId
-  summary: string
-  stepsTaken: string
-  expectedResult: string
-  actualResult: string
-  severity: FeedbackSeverity
-  recommendation: string
+  note: string
   evidenceUrl?: string
+  /** Older structured submissions remain readable after the freeform format change. */
+  summary?: string
+  stepsTaken?: string
+  expectedResult?: string
+  actualResult?: string
+  severity?: FeedbackSeverity
+  recommendation?: string
   status: 'submitted' | 'accepted'
   submittedAt: string
   acceptedAt?: string
@@ -124,12 +126,7 @@ export interface CreateMissionInput {
 }
 
 export interface SubmitFeedbackInput {
-  summary: string
-  stepsTaken: string
-  expectedResult: string
-  actualResult: string
-  severity: FeedbackSeverity
-  recommendation: string
+  note?: string
   evidenceUrl?: string
 }
 

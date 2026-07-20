@@ -7,6 +7,9 @@ export interface RealtimeProfile {
   handle: string
   avatarColor: string
   avatarUrl?: string
+  profileId?: string
+  actorType?: 'human' | 'agent'
+  ownerHandle?: string
 }
 
 export interface RealtimeMessageRecord {
@@ -16,6 +19,9 @@ export interface RealtimeMessageRecord {
   handle: string
   avatarColor: string
   avatarUrl?: string
+  profileId?: string
+  actorType?: 'human' | 'agent'
+  ownerHandle?: string
   text: string
   sentAt: string
 }
@@ -118,6 +124,9 @@ export function isRealtimeProfile(value: unknown): value is RealtimeProfile {
     && typeof value.handle === 'string'
     && typeof value.avatarColor === 'string'
     && (value.avatarUrl === undefined || normalizeAvatarUrl(value.avatarUrl) !== undefined)
+    && (value.profileId === undefined || typeof value.profileId === 'string')
+    && (value.actorType === undefined || ['human', 'agent'].includes(String(value.actorType)))
+    && (value.ownerHandle === undefined || typeof value.ownerHandle === 'string')
 }
 
 export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessageRecord {
@@ -128,6 +137,9 @@ export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessag
     && typeof value.handle === 'string'
     && typeof value.avatarColor === 'string'
     && (value.avatarUrl === undefined || normalizeAvatarUrl(value.avatarUrl) !== undefined)
+    && (value.profileId === undefined || typeof value.profileId === 'string')
+    && (value.actorType === undefined || ['human', 'agent'].includes(String(value.actorType)))
+    && (value.ownerHandle === undefined || typeof value.ownerHandle === 'string')
     && typeof value.text === 'string'
     && typeof value.sentAt === 'string'
 }

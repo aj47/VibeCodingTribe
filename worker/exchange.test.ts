@@ -54,17 +54,17 @@ describe('ExchangeStore', () => {
 
     state = await stateFrom(await store.fetch(request(testerActor, { type: 'claim_mission', input: { missionId } }, 'command_claim_123')))
     state = await stateFrom(await store.fetch(request(testerActor, { type: 'submit_feedback', input: { missionId, feedback: {
-      summary: 'Confirmation disappears', stepsTaken: 'Invited a teammate', expectedResult: 'Persistent state',
-      actualResult: 'Short toast', severity: 'medium', recommendation: 'Show a pending row',
+      note: 'The confirmation disappears too quickly. Keep the success state visible.',
     } } }, 'command_feedback_123')))
-    state = await stateFrom(await store.fetch(request(requesterActor, { type: 'accept_feedback', input: { missionId } }, 'command_accept_123')))
+    const feedbackId = state.feedback[0]!.id
+    state = await stateFrom(await store.fetch(request(requesterActor, { type: 'accept_feedback', input: { missionId, feedbackId } }, 'command_accept_123')))
     expect(systemBalance(state, 'escrow')).toBe(0)
     expect(systemBalance(state, 'platform')).toBe(2)
 
     const testerState = await stateFrom(await store.fetch(request(testerActor)))
     expect(creditBalance(testerState, testerFixture.id)).toBe(18)
 
-    const replayed = await stateFrom(await store.fetch(request(requesterActor, { type: 'accept_feedback', input: { missionId } }, 'command_accept_123')))
+    const replayed = await stateFrom(await store.fetch(request(requesterActor, { type: 'accept_feedback', input: { missionId, feedbackId } }, 'command_accept_123')))
     expect(replayed.transactions).toHaveLength(state.transactions.length)
 
     state = await stateFrom(await store.fetch(request(requesterActor, { type: 'convert_feedback_to_tasks', input: { missionId } }, 'command_tasks_123')))

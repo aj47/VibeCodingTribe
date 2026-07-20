@@ -1,15 +1,4 @@
-import {
-  ArrowUpRight,
-  Bot,
-  ClipboardCheck,
-  Github,
-  Globe2,
-  Linkedin,
-  LockKeyhole,
-  MessageCircle,
-  Radio,
-  ShieldCheck,
-} from 'lucide-react'
+import { ArrowUpRight, Bot, ClipboardCheck, Github, Linkedin, MessageCircle, Radio, ShieldCheck } from 'lucide-react'
 import type { AuthProvider } from '../auth/types'
 import { Brand } from './Brand'
 
@@ -43,11 +32,6 @@ export function AuthScreen({ pendingProvider, authError, onSignIn, onOpenExchang
         <div className="auth-hero__copy">
           <div className="auth-kicker"><Radio size={14} /> Real product testing · builder to builder</div>
           <h1>Find real testers.<br /><span>Join the tribe.</span></h1>
-          <p>
-            Put your product in front of builders who know what good software feels like. Create a focused
-            testing mission, get structured feedback, and return the favor by testing theirs.
-          </p>
-
           <button className="auth-view-room" type="button" onClick={onOpenExchange}>
             <ClipboardCheck size={17} /> Find testers for your product <ArrowUpRight size={15} />
           </button>
@@ -74,21 +58,16 @@ export function AuthScreen({ pendingProvider, authError, onSignIn, onOpenExchang
           </div>
         </div>
 
-        <div className="auth-truth" aria-label="What is implemented today">
-          <header>
-            <span>vibecodingtribe.com</span><i>/</i><span>testing</span><i>/</i><strong>exchange</strong>
-            <em><Radio size={11} /> OPEN</em>
-          </header>
-          <div className="auth-truth__empty">
-            <div><ClipboardCheck size={25} /></div>
-            <h2>Real testers. Useful evidence.</h2>
-            <p>Fund a focused mission, review grounded feedback, and turn accepted findings into buildable tasks.</p>
-          </div>
-          <footer>
-            <span><ClipboardCheck size={14} /><b>Structured testing</b><small>Evidence over vibes</small></span>
-            <span><Globe2 size={14} /><b>Credible profiles</b><small>LinkedIn or GitHub</small></span>
-            <span><LockKeyhole size={14} /><b>Escrowed credits</b><small>Release on acceptance</small></span>
-          </footer>
+      </section>
+
+      <section className="auth-how" aria-label="How the exchange works">
+        <div className="auth-quiet-proof">
+          <h2 className="sr-only">Real testers. Useful evidence.</h2>
+          <span className="auth-quiet-proof__eyebrow">HOW IT WORKS</span>
+          <div className="auth-quiet-proof__line"><span>01</span><b>Request a test</b></div>
+          <div className="auth-quiet-proof__line"><span>02</span><b>Get feedback</b></div>
+          <div className="auth-quiet-proof__line"><span>03</span><b>Return the favor</b></div>
+          <div className="auth-quiet-proof__line"><span>04</span><b>Engage with the community</b></div>
         </div>
       </section>
 

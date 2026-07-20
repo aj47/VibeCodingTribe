@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#f5f5f2"/>
+  <path d="M0 126h1200M0 252h1200M0 378h1200M0 504h1200M120 0v630M240 0v630M360 0v630M480 0v630M600 0v630M720 0v630M840 0v630M960 0v630M1080 0v630" stroke="#d9dde3" stroke-width="1" opacity=".55"/>
+  <path d="M865 0h335v335" fill="#cfe5ff" opacity=".32"/>
+  <g transform="translate(100 82)">
+    <path d="M32 14 52 50 72 14" fill="none" stroke="#171b20" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="32" cy="14" r="10" fill="#f5f5f2" stroke="#1f70d0" stroke-width="6"/>
+    <circle cx="72" cy="14" r="10" fill="#f5f5f2" stroke="#1f70d0" stroke-width="6"/>
+    <circle cx="52" cy="50" r="10" fill="#f5f5f2" stroke="#1f70d0" stroke-width="6"/>
+  </g>
+  <text x="100" y="260" fill="#171b20" font-family="Arial, sans-serif" font-size="76" font-weight="700" letter-spacing="-4">VibeCoding<tspan fill="#1f70d0">Tribe</tspan></text>
+  <text x="100" y="346" fill="#171b20" font-family="Arial, sans-serif" font-size="46" font-weight="700" letter-spacing="-1.5">Find real testers. Join the tribe.</text>
+  <text x="100" y="410" fill="#586570" font-family="Arial, sans-serif" font-size="25">Builder-to-builder feedback for products in the making.</text>
+  <rect x="100" y="482" width="270" height="4" rx="2" fill="#1f70d0"/>
+</svg>

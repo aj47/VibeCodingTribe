@@ -19,8 +19,8 @@ export function installExchangeApiMock() {
       case 'create_mission': state = createMission(state, actorId, command.input as unknown as CreateMissionInput); break
       case 'claim_mission': state = claimMission(state, String(command.input.missionId), actorId); break
       case 'submit_feedback': state = submitFeedback(state, String(command.input.missionId), actorId, command.input.feedback as SubmitFeedbackInput); break
-      case 'accept_feedback': state = acceptFeedback(state, String(command.input.missionId), actorId); break
-      case 'convert_feedback_to_tasks': state = convertAcceptedFeedbackToTasks(state, String(command.input.missionId), actorId); break
+      case 'accept_feedback': state = acceptFeedback(state, String(command.input.missionId), actorId, String(command.input.feedbackId)); break
+      case 'convert_feedback_to_tasks': state = convertAcceptedFeedbackToTasks(state, String(command.input.missionId), actorId, command.input.feedbackId ? String(command.input.feedbackId) : undefined); break
       default: return Response.json({ error: 'Unknown command' }, { status: 400 })
     }
     return Response.json({ state })

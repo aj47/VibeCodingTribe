@@ -1,4 +1,4 @@
-import type { AuthProvider, AuthSession } from '../auth/types'
+import type { AgentCredentialSummary, AgentEnrollment, AuthProvider, AuthSession, PublicHumanProfile } from '../auth/types'
 
 const SESSION_TOKEN_KEY = 'vct-session-token-v1'
 const PRODUCTION_ORIGIN = 'https://vibecodingtribe-realtime.techfren.workers.dev'
@@ -38,6 +38,63 @@ export function beginOAuth(provider: AuthProvider, returnTo = '/exchange') {
   const url = new URL(`/auth/${provider}`, authOrigin())
   url.searchParams.set('returnTo', returnTo)
   window.location.assign(url.toString())
+}
+
+export async function beginLinkOAuth(provider: AuthProvider, returnTo = '/settings/profile') {
+  const token = getSessionToken()
+  if (!token) throw new Error('Sign in before linking another account')
+  const url = new URL(`/auth/link/${provider}`, authOrigin())
+  url.searchParams.set('returnTo', returnTo)
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, mode: 'cors' })
+  const result = await response.json() as { authorizationUrl?: string; error?: string }
+  if (!response.ok || !result.authorizationUrl) throw new Error(result.error || 'Could not start account linking')
+  window.location.assign(result.authorizationUrl)
+}
+
+async function authenticatedJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Authentication required')
+  const headers = new Headers(init?.headers)
+  headers.set('Authorization', `Bearer ${token}`)
+  if (init?.body) headers.set('Content-Type', 'application/json')
+  const response = await fetch(new URL(path, authOrigin()), { ...init, headers, mode: 'cors' })
+  const result = await response.json().catch(() => ({})) as T & { error?: string }
+  if (!response.ok) throw new Error(result.error || 'Request failed')
+  return result
+}
+
+export async function loadOwnProfile() {
+  return authenticatedJson<{ profile: PublicHumanProfile }>('/api/profile')
+}
+
+export async function updateOwnProfile(input: Pick<PublicHumanProfile, 'displayName'> & Partial<Pick<PublicHumanProfile, 'headline' | 'githubUrl' | 'linkedinUrl'>>) {
+  return authenticatedJson<{ profile: PublicHumanProfile }>('/api/profile', { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export async function loadPublicProfile(profileId: string) {
+  const response = await fetch(new URL(`/api/profiles/${encodeURIComponent(profileId)}`, authOrigin()), { mode: 'cors' })
+  const result = await response.json() as { profile?: PublicHumanProfile; error?: string }
+  if (!response.ok || !result.profile) throw new Error(result.error || 'Profile not found')
+  return result.profile
+}
+
+export async function loadAgentEnrollment(id: string) {
+  const response = await fetch(new URL(`/api/agents/enrollments/${encodeURIComponent(id)}`, authOrigin()), { mode: 'cors' })
+  const result = await response.json() as { enrollment?: AgentEnrollment; error?: string }
+  if (!response.ok || !result.enrollment) throw new Error(result.error || 'Agent request not found')
+  return result.enrollment
+}
+
+export async function authorizeAgentEnrollment(id: string) {
+  return authenticatedJson<{ enrollment: AgentEnrollment; credential: AgentCredentialSummary }>(`/api/agents/enrollments/${encodeURIComponent(id)}/authorize`, { method: 'POST' })
+}
+
+export async function loadAgentCredentials() {
+  return authenticatedJson<{ credentials: AgentCredentialSummary[] }>('/api/agents')
+}
+
+export async function changeAgentCredential(id: string, action: 'rotate' | 'revoke') {
+  return authenticatedJson<{ credential: AgentCredentialSummary }>(`/api/agents/${encodeURIComponent(id)}/${action}`, { method: 'POST' })
 }
 
 export async function loadAuthSession(token = getSessionToken()): Promise<AuthSession | null> {

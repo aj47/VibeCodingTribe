@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installExchangeApiMock } from '../test/exchange-api'
 import { ExchangeApp } from './ExchangeApp'
@@ -16,12 +16,12 @@ describe('ExchangeApp', () => {
     expect(await screen.findByRole('heading', { name: 'You’re ready to request feedback.' })).toBeInTheDocument()
     expect(screen.getByText('10', { selector: '.account-balance strong' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Request feedback/i }))
-    fireEvent.change(screen.getByLabelText('Product name'), { target: { value: 'Release Candidate' } })
-    fireEvent.change(screen.getByLabelText('Product URL'), { target: { value: 'https://product.test' } })
-    fireEvent.change(screen.getByLabelText('What is the product?'), { target: { value: 'A product ready for testing.' } })
-    fireEvent.change(screen.getByLabelText('Mission title'), { target: { value: 'Test the first-run experience' } })
-    fireEvent.change(screen.getByLabelText('Test scenario'), { target: { value: 'Create an account and complete onboarding.' } })
-    fireEvent.change(screen.getByLabelText('What does success look like?'), { target: { value: 'Onboarding completes without confusion.' } })
+    fireEvent.change(screen.getByLabelText(/Product name/), { target: { value: 'Release Candidate' } })
+    fireEvent.change(screen.getByLabelText(/Product URL/), { target: { value: 'https://product.test' } })
+    fireEvent.change(screen.getByLabelText(/Tell builders about it/), { target: { value: 'A product ready for testing.' } })
+    fireEvent.change(screen.getByLabelText(/Request title/), { target: { value: 'Test the first-run experience' } })
+    fireEvent.change(screen.getByLabelText(/Anything you want someone to try/), { target: { value: 'Create an account and complete onboarding.' } })
+    fireEvent.change(screen.getByLabelText(/What would be useful to hear back/), { target: { value: 'Onboarding completes without confusion.' } })
     fireEvent.click(screen.getByRole('button', { name: /Publish and fund/i }))
     expect(await screen.findByText(/10 credits are secured in server escrow/i)).toBeInTheDocument()
 
@@ -31,12 +31,8 @@ describe('ExchangeApp', () => {
     const giveFeedbackButton = await screen.findByRole('button', { name: /Give feedback/i })
     await waitFor(() => expect(giveFeedbackButton).toBeEnabled())
     fireEvent.click(giveFeedbackButton)
-    expect(await screen.findByRole('heading', { name: 'Complete the mission' })).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('What did you find?'), { target: { value: 'The confirmation disappears too quickly.' } })
-    fireEvent.change(screen.getByLabelText('Steps you took'), { target: { value: 'Created an account and finished onboarding.' } })
-    fireEvent.change(screen.getByLabelText('Expected result'), { target: { value: 'A persistent confirmation.' } })
-    fireEvent.change(screen.getByLabelText('Actual result'), { target: { value: 'A short toast.' } })
-    fireEvent.change(screen.getByLabelText('Recommendation'), { target: { value: 'Keep the success state visible.' } })
+    expect(await screen.findByRole('heading', { name: 'What did you notice?' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/Your note/), { target: { value: 'The confirmation disappears too quickly. Keep the success state visible.' } })
     fireEvent.click(screen.getByRole('button', { name: /Submit feedback/i }))
     expect(await screen.findByText(/requester now has a review/i)).toBeInTheDocument()
 
@@ -52,7 +48,7 @@ describe('ExchangeApp', () => {
     fireEvent.click(convertButton)
 
     expect(await screen.findByRole('heading', { name: 'Draft development tasks' })).toBeInTheDocument()
-    expect(screen.getByText('Reproduce: The confirmation disappears too quickly.')).toBeInTheDocument()
+    expect(screen.getByText('Review: The confirmation disappears too quickly. Keep the success state visible.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText(/No repository was accessed/i)).toBeInTheDocument())
   })
 
@@ -60,18 +56,32 @@ describe('ExchangeApp', () => {
     render(<ExchangeApp signedIn authenticatedUserId="user_a" onOpenRoom={vi.fn()} onSignIn={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Request feedback/i }))
-    fireEvent.change(screen.getByLabelText('Product name'), { target: { value: 'Release Candidate' } })
-    fireEvent.change(screen.getByLabelText('Product URL'), { target: { value: 'https://product.test' } })
-    fireEvent.change(screen.getByLabelText('What is the product?'), { target: { value: 'A product ready for testing.' } })
-    fireEvent.change(screen.getByLabelText('Mission title'), { target: { value: 'Test onboarding' } })
-    fireEvent.change(screen.getByLabelText('Test scenario'), { target: { value: 'Complete onboarding.' } })
-    fireEvent.change(screen.getByLabelText('What does success look like?'), { target: { value: 'Finish without confusion.' } })
     fireEvent.click(screen.getByRole('button', { name: /Publish and fund/i }))
 
     expect(await screen.findByRole('heading', { name: 'Your feedback request is live.' })).toBeInTheDocument()
     expect(screen.getByText('0/10 credits toward your next feedback request')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Request feedback/i })).toBeDisabled()
     expect(screen.getByText(/ready for another builder to claim/i)).toBeInTheDocument()
+  })
+
+  it('shows submitted projects in history and opens their details', async () => {
+    render(<ExchangeApp signedIn authenticatedUserId="user_a" onOpenRoom={vi.fn()} onSignIn={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Request feedback/i }))
+    fireEvent.change(screen.getByLabelText(/Product name/), { target: { value: 'Launchpad' } })
+    fireEvent.change(screen.getByLabelText(/Request title/), { target: { value: 'Try the invite flow' } })
+    fireEvent.click(screen.getByRole('button', { name: /Publish and fund/i }))
+    expect(await screen.findByRole('heading', { name: 'Your feedback request is live.' })).toBeInTheDocument()
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Exchange navigation' })).getByRole('button', { name: /History/i }))
+    expect(await screen.findByRole('heading', { name: 'Feedback history' })).toBeInTheDocument()
+    expect(screen.getByText('Projects submitted for feedback')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Try the invite flow.*Launchpad/i }))
+
+    expect(await screen.findByRole('dialog', { name: /Try the invite flow/i })).toBeInTheDocument()
+    expect(screen.getByText('WHAT TESTERS WERE ASKED TO TRY')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('requires authentication before loading exchange data', async () => {

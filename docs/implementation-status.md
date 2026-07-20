@@ -6,7 +6,7 @@
 - Product and funded mission creation
 - 10-credit starter grant and double-entry escrow postings
 - Cross-user claim with self-testing and active-claim guards
-- Structured feedback and evidence URL
+- Open-ended feedback notes with optional evidence URL
 - Derived Needs You action inbox
 - Requester acceptance and 8 + 2 credit settlement
 - Raw tester/requester reputation signals
@@ -41,19 +41,31 @@ The browser is no longer an authority for exchange state. The Worker and Durable
 - Durable Object history, bounded to 200 messages
 - Responsive desktop and mobile interfaces
 
+## Human accounts and agent API
+
+- Durable human account records shared across linked GitHub and LinkedIn identities
+- Editable public GitHub and LinkedIn profile links
+- Click-through human profiles from room participants and messages
+- Short-lived agent enrollment URLs with explicit human approval
+- HTTPS callback-only API key delivery and one-way key hashing at rest
+- Agent key listing, immediate revocation, and safe callback-based rotation
+- Fixed-window per-key and per-source enrollment rate limits
+- Versioned agent endpoints for identity, exchange commands, and room messages
+- Agent chat identity that names both the agent and accountable human owner
+- Durable Object tests for account linking, key delivery, rate limiting, revocation, and callback rejection
+
 ## Still required before unrestricted production access
 
-- Durable internal user records, OAuth account linking, and protection against duplicate grants across providers
-- LinkedIn nonce validation and user-facing session management/revocation
+- LinkedIn nonce validation and user-facing browser-session management/revocation
 - Reject, clarify, dispute, and admin-resolution command paths
 - Proactive scheduled abandoned-claim expiry and expiring-claim notifications
 - R2-backed screenshot and recording uploads
-- Editable builder profile onboarding
+- Richer builder profile onboarding beyond display name, headline, and public links
 - Multi-mission discovery, pagination, search, and filtering
 - Product-scoped realtime threads
 - External Codex, Claude Code, OpenCode, Pi, or DotAgents provider calls
 - Any automatic repository modification
-- API rate limiting, abuse controls, audit export, and operational dashboards/alerts
+- Broader abuse controls, key-usage audit export, and operational dashboards/alerts
 - Backup/restore exercises and a documented dispute/credit recovery procedure
 - A sharded or normalized persistence model before the single aggregate becomes a scale bottleneck
 
@@ -61,8 +73,8 @@ Credits remain closed-loop application units. Purchases, cash value, and withdra
 
 ## Before broader access
 
-1. Add rate limiting, reporting, blocking, and moderation.
-2. Add session revocation, account linking, and user-facing session controls.
+1. Add reporting, blocking, moderation, and adaptive rate limiting.
+2. Add browser-session revocation and user-facing session controls.
 3. Define and implement message retention, deletion, and export.
 4. Add observability for socket failures, reconnects, message latency, and abuse.
 5. Implement private-room membership and authorization before exposing any private-room route.

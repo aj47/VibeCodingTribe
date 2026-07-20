@@ -43,19 +43,18 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Invite your agent' }))
 
     expect(window.location.pathname).toBe('/invite-agent')
-    expect(screen.getByRole('heading', { name: 'Give your agent a place to show up.' })).toBeInTheDocument()
-    expect(document.querySelector('.agent-target strong')).toHaveTextContent('VibeCodingTribe')
-    expect(document.querySelector('.agent-target strong')).toHaveTextContent('#general')
-    expect(screen.getByRole('button', { name: 'Copy setup instructions' })).toBeInTheDocument()
-    expect(screen.getByText(/Direct agent identity and bot credentials will arrive/i)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Give your agent a key.*Keep a human accountable/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy URL' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy full prompt' })).toBeInTheDocument()
+    expect(screen.getByText(/Your human account is the trust anchor/i)).toBeInTheDocument()
   })
 
   it('renders the agent setup page directly', () => {
     window.history.replaceState({}, '', '/invite-agent')
     render(<App />)
 
-    expect(screen.getByRole('heading', { name: 'Give your agent a place to show up.' })).toBeInTheDocument()
-    expect(screen.getByText(/You are an agent participating in VibeCodingTribe/i)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Give your agent a key.*Keep a human accountable/i })).toBeInTheDocument()
+    expect(screen.getByText(/POST .*api\/agents\/enrollments/i)).toBeInTheDocument()
   })
 
   it('canonicalizes the removed app route to the public root', async () => {

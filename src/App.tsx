@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AuthProvider, AuthSession } from './auth/types'
 import { AgentInvitePage } from './components/AgentInvitePage'
+import { AgentAuthorizationPage } from './components/AgentAuthorizationPage'
 import { AuthScreen } from './components/AuthScreen'
 import { ExchangeApp } from './components/ExchangeApp'
 import { LiveRoom, type MessageDeliveryState } from './components/LiveRoom'
+import { ProfilePage } from './components/ProfilePage'
 import {
   MAX_REALTIME_MESSAGE_LENGTH,
   type RealtimeMessageRecord,
@@ -24,7 +26,7 @@ import {
   saveRealtimeProfile,
 } from './services/realtime'
 
-type Surface = 'home' | 'exchange' | 'room' | 'invite-agent'
+type Surface = 'home' | 'exchange' | 'room' | 'invite-agent' | 'profile' | 'authorize-agent'
 type ConnectionStatus = 'connected' | 'syncing' | 'offline'
 
 const DRAFT_KEY = 'vct-general-draft-v1'
@@ -33,6 +35,8 @@ const LEGACY_STORAGE_KEYS = ['vct-workspace-v3', 'vct-realtime-profile-v1', 'vct
 function loadSurface(): Surface {
   const path = window.location.pathname.replace(/\/+$/, '')
   if (path === '/invite-agent') return 'invite-agent'
+  if (path === '/settings/profile' || path.startsWith('/p/')) return 'profile'
+  if (path.startsWith('/agents/authorize/')) return 'authorize-agent'
   if (path === '/exchange') return 'exchange'
   const isRoom = path === '/r/general'
   return isRoom ? 'room' : 'home'
@@ -61,10 +65,17 @@ export function App() {
   const [draft, setDraft] = useState(() => window.localStorage.getItem(DRAFT_KEY) ?? '')
   const [notice, setNotice] = useState<string | null>(null)
   const realtimeClientRef = useRef<RealtimeRoomClient | null>(null)
+  const profileBackRef = useRef<Surface>('room')
   const canPost = Boolean(authSession)
 
   useEffect(() => {
     for (const key of LEGACY_STORAGE_KEYS) window.localStorage.removeItem(key)
+  }, [])
+
+  useEffect(() => {
+    const handlePopState = () => setSurface(loadSurface())
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
   }, [])
 
   useEffect(() => {
@@ -90,6 +101,14 @@ export function App() {
     if (surface === 'invite-agent') {
       window.history.replaceState({}, '', '/invite-agent')
       document.title = 'Invite your agent · VibeCodingTribe'
+      return
+    }
+    if (surface === 'profile') {
+      document.title = 'Human profile · VibeCodingTribe'
+      return
+    }
+    if (surface === 'authorize-agent') {
+      document.title = 'Authorize agent · VibeCodingTribe'
     }
   }, [surface])
 
@@ -115,6 +134,8 @@ export function App() {
         handle: session.user.handle,
         avatarColor: session.user.provider === 'github' ? '#9bcf66' : '#70a8c4',
         ...(session.user.avatarUrl ? { avatarUrl: session.user.avatarUrl } : {}),
+        profileId: session.user.id,
+        actorType: 'human',
       }
       saveRealtimeProfile(authenticatedProfile)
       setProfile(authenticatedProfile)
@@ -145,6 +166,9 @@ export function App() {
       handle: record.handle,
       avatarColor: record.avatarColor,
       ...(record.avatarUrl ? { avatarUrl: record.avatarUrl } : {}),
+      ...(record.profileId ? { profileId: record.profileId } : {}),
+      ...(record.actorType ? { actorType: record.actorType } : {}),
+      ...(record.ownerHandle ? { ownerHandle: record.ownerHandle } : {}),
     })))
   }, [rememberProfiles])
 
@@ -215,6 +239,9 @@ export function App() {
       handle: profile.handle,
       avatarColor: profile.avatarColor,
       ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
+      ...(profile.profileId ? { profileId: profile.profileId } : {}),
+      ...(profile.actorType ? { actorType: profile.actorType } : {}),
+      ...(profile.ownerHandle ? { ownerHandle: profile.ownerHandle } : {}),
       text,
       sentAt: new Date().toISOString(),
     }
@@ -260,6 +287,25 @@ export function App() {
     setSurface('invite-agent')
   }
 
+  const openOwnProfile = () => {
+    profileBackRef.current = surface
+    window.history.pushState({}, '', '/settings/profile')
+    setSurface('profile')
+  }
+
+  const openPublicProfile = (profileId: string) => {
+    profileBackRef.current = 'room'
+    window.history.pushState({}, '', `/p/${encodeURIComponent(profileId)}`)
+    setSurface('profile')
+  }
+
+  const backFromProfile = () => {
+    if (profileBackRef.current === 'invite-agent') return openAgentInvite()
+    if (profileBackRef.current === 'exchange') return openExchange()
+    if (profileBackRef.current === 'home') return openHome()
+    return openRoom()
+  }
+
   if (surface === 'home') {
     return (
       <AuthScreen
@@ -277,7 +323,26 @@ export function App() {
   }
 
   if (surface === 'invite-agent') {
-    return <AgentInvitePage onOpenRoom={openRoom} onBackHome={openHome} />
+    return <AgentInvitePage session={authSession} onOpenRoom={openRoom} onBackHome={openHome} onSignIn={() => {
+      setAuthPendingProvider('github')
+      beginOAuth('github', '/invite-agent')
+    }} onOpenProfile={openOwnProfile} />
+  }
+
+  if (surface === 'authorize-agent') {
+    const enrollmentId = window.location.pathname.split('/').filter(Boolean).at(-1) ?? ''
+    return <AgentAuthorizationPage enrollmentId={enrollmentId} session={authSession} onBack={openAgentInvite} onSignIn={() => {
+      setAuthPendingProvider('github')
+      beginOAuth('github', window.location.pathname)
+    }} />
+  }
+
+  if (surface === 'profile') {
+    const pathProfileId = window.location.pathname.startsWith('/p/') ? decodeURIComponent(window.location.pathname.slice(3)) : undefined
+    return <ProfilePage session={authSession} profileId={pathProfileId} onBack={backFromProfile} onSignIn={() => {
+      setAuthPendingProvider('github')
+      beginOAuth('github', window.location.pathname)
+    }} />
   }
 
   if (surface === 'exchange') {
@@ -325,6 +390,8 @@ export function App() {
       }}
       onInviteAgent={openAgentInvite}
       onOpenExchange={openExchange}
+      onOpenProfile={openPublicProfile}
+      onOpenOwnProfile={openOwnProfile}
     />
   )
 }

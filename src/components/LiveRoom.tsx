@@ -11,6 +11,7 @@ import {
   LogOut,
   RotateCcw,
   Send,
+  UserRound,
   Users,
   Wifi,
   WifiOff,
@@ -53,6 +54,8 @@ interface LiveRoomProps {
   onSignOut: () => void
   onInviteAgent: () => void
   onOpenExchange: () => void
+  onOpenProfile: (profileId: string) => void
+  onOpenOwnProfile: () => void
 }
 
 function initials(name: string) {
@@ -102,6 +105,8 @@ export function LiveRoom({
   onSignOut,
   onInviteAgent,
   onOpenExchange,
+  onOpenProfile,
+  onOpenOwnProfile,
 }: LiveRoomProps) {
   const [accountOpen, setAccountOpen] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
@@ -166,6 +171,7 @@ export function LiveRoom({
                 {provider === 'github' ? <Github size={14} /> : provider === 'linkedin' ? <Linkedin size={14} /> : null}
                 <span>{provider ? `Signed in with ${provider === 'github' ? 'GitHub' : 'LinkedIn'}` : 'Local preview identity'}</span>
               </div>
+              <button type="button" onClick={onOpenOwnProfile}><UserRound size={14} /> Profile settings</button>
               <button type="button" onClick={onSignOut}><LogOut size={14} /> Sign out</button>
             </div>
           )}
@@ -222,8 +228,9 @@ export function LiveRoom({
                     <RoomAvatar identity={message} className=" avatar--message" />
                     <div className="chat-message__body">
                       <header>
-                        <strong>{message.displayName}</strong>
+                        {message.profileId ? <button className="message-profile-link" type="button" onClick={() => onOpenProfile(message.profileId!)}><strong>{message.displayName}</strong></button> : <strong>{message.displayName}</strong>}
                         <span>@{message.handle}</span>
+                        {message.actorType === 'agent' && <em>agent of @{message.ownerHandle}</em>}
                         {ownMessage && <em>you</em>}
                         <time dateTime={message.sentAt}>{messageTime(message.sentAt)}</time>
                       </header>
@@ -285,11 +292,11 @@ export function LiveRoom({
           <header><span>People</span><b>{participants.length}</b></header>
           <div className="people-list">
             {participants.map((participant) => (
-              <div className="person-row" key={participant.clientId}>
+              <button className="person-row" type="button" key={participant.clientId} disabled={!participant.profileId} onClick={() => participant.profileId && onOpenProfile(participant.profileId)}>
                 <RoomAvatar identity={participant} />
                 <span><b>{participant.displayName}</b><small>@{participant.handle}</small></span>
                 <i className={onlineIds.has(participant.clientId) ? 'is-online' : ''} aria-label={onlineIds.has(participant.clientId) ? 'Online' : 'Offline'} />
-              </div>
+              </button>
             ))}
           </div>
           <footer>

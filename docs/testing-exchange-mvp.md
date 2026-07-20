@@ -6,7 +6,7 @@ This document records the product and architecture decision for pivoting VibeCod
 
 The first server-backed tranche is complete. `/api/exchange` authenticates the actor in the Worker and delegates to an `ExchangeStore` Durable Object. Its storage transaction atomically applies domain commands, writes the exchange snapshot, and stores the idempotent command fingerprint. The React client does not read or write authoritative exchange state in browser storage. A signed LinkedIn or GitHub session is required in every environment.
 
-The verified flow is: a new requester receives 10 credits and funds a 10-credit mission; another authenticated builder claims it and submits structured feedback; the requester accepts it; the tester receives 8 credits; 2 credits move to the platform sink; and the server planning adapter persists read-only task drafts. A reload preserves the result.
+The verified flow is: a new requester receives 10 credits and funds a 10-credit mission; another authenticated builder claims it and submits an open-ended feedback note (or leaves it blank); the requester accepts it; the tester receives 8 credits; 2 credits move to the platform sink; and the server planning adapter persists read-only task drafts. A reload preserves the result.
 
 ## 1. Current codebase reuse assessment
 
@@ -55,7 +55,7 @@ Identifiers are opaque strings. Every mutable aggregate includes `createdAt`, `u
 - `ProductSpace`: `id`, `ownerId`, name, URL, description, platforms, access instructions, room key, status.
 - `Mission`: `id`, `productId`, `requesterId`, title, scenario, acceptance criteria, required devices/skills, reward credits, platform fee credits, claim duration, status.
 - `Claim`: `id`, `missionId`, `testerId`, status, claimed/expires/submitted timestamps. One active claim per mission; enforce a configurable per-tester active limit.
-- `Feedback`: `id`, `claimId`, summary, steps taken, expected result, actual result, severity, recommendation, submitted timestamp, review status.
+- `Feedback`: `id`, `claimId`, optional freeform note, optional evidence URL, submitted timestamp, review status.
 - `FeedbackAsset`: `id`, `feedbackId`, media type, object-store key, content type, size, checksum. Use signed upload URLs; never embed large media in mission records.
 - `DiscussionThread` and `ThreadMessage`: attached to a mission, feedback, or dispute; participants are authorized from the parent object.
 - `Dispute`: `id`, `feedbackId`, openedById`, reason, status, assignedAdminId, resolution, resolvedAt`.

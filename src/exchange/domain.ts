@@ -92,7 +92,7 @@ export function creditBalance(state: ExchangeState, userId: UserId) {
     .reduce((sum, posting) => sum + posting.amount, 0)
 }
 
-export function systemBalance(state: ExchangeState, account: 'escrow' | 'platform') {
+export function systemBalance(state: ExchangeState, account: 'escrow' | 'platform' | 'reward_issuance') {
   return state.transactions.flatMap((transaction) => transaction.postings)
     .filter((posting) => posting.accountId === `system:${account}`)
     .reduce((sum, posting) => sum + posting.amount, 0)
@@ -106,9 +106,6 @@ export function createMission(
 ): ExchangeState {
   if (creditBalance(state, requesterId) < EXCHANGE_DEFAULTS.missionCost) {
     throw new ExchangeCommandError('You need 10 credits to publish this mission')
-  }
-  if (!input.productName.trim() || !input.title.trim() || !input.scenario.trim() || !input.successCriteria.trim()) {
-    throw new ExchangeCommandError('Complete the product, mission, scenario, and success criteria fields')
   }
 
   const productId = nextId(state, 'product')
@@ -132,7 +129,7 @@ export function createMission(
     products: [...state.products, {
       id: productId,
       ownerId: requesterId,
-      name: input.productName.trim(),
+      name: input.productName.trim() || 'Untitled product',
       url: input.productUrl.trim(),
       description: input.productDescription.trim(),
       createdAt: now,
@@ -141,7 +138,7 @@ export function createMission(
       id: missionId,
       productId,
       requesterId,
-      title: input.title.trim(),
+      title: input.title.trim() || 'Open feedback request',
       scenario: input.scenario.trim(),
       successCriteria: input.successCriteria.trim(),
       deviceRequirement: input.deviceRequirement.trim() || 'Any desktop browser',
@@ -156,17 +153,19 @@ export function createMission(
 
 export function claimMission(state: ExchangeState, missionId: string, testerId: UserId, now = new Date().toISOString()) {
   const mission = state.missions.find((item) => item.id === missionId)
-  if (!mission || mission.status !== 'open') throw new ExchangeCommandError('This mission is no longer available')
+  if (!mission || !['open', 'claimed', 'in_review', 'accepted'].includes(mission.status)) throw new ExchangeCommandError('This mission is no longer available')
   const product = state.products.find((item) => item.id === mission.productId)
   if (!product) throw new ExchangeCommandError('The product could not be found')
   if (product.ownerId === testerId) throw new ExchangeCommandError('You cannot test your own product')
+  if (state.claims.some((claim) => claim.missionId === missionId && claim.testerId === testerId && claim.status !== 'expired')) {
+    throw new ExchangeCommandError('You already gave feedback for this mission')
+  }
   const activeClaims = state.claims.filter((claim) => claim.testerId === testerId && ['active', 'submitted'].includes(claim.status))
   if (activeClaims.length >= EXCHANGE_DEFAULTS.activeClaimLimit) throw new ExchangeCommandError('Complete your active claim before taking another')
   const expiresAt = new Date(new Date(now).getTime() + EXCHANGE_DEFAULTS.claimHours * 60 * 60 * 1000).toISOString()
   return {
     ...state,
     sequence: state.sequence + 1,
-    missions: state.missions.map((item) => item.id === missionId ? { ...item, status: 'claimed' as const } : item),
     claims: [...state.claims, {
       id: nextId(state, 'claim'),
       missionId,
@@ -187,21 +186,13 @@ export function submitFeedback(
 ) {
   const mission = state.missions.find((item) => item.id === missionId)
   const claim = state.claims.find((item) => item.missionId === missionId && item.testerId === testerId && item.status === 'active')
-  if (!mission || mission.status !== 'claimed' || !claim) throw new ExchangeCommandError('You do not have an active claim for this mission')
-  if ([input.summary, input.stepsTaken, input.expectedResult, input.actualResult, input.recommendation].some((value) => !value.trim())) {
-    throw new ExchangeCommandError('Complete every feedback field before submitting')
-  }
+  if (!mission || !['open', 'claimed', 'in_review', 'accepted'].includes(mission.status) || !claim) throw new ExchangeCommandError('You do not have an active claim for this mission')
   const feedback: Feedback = {
     id: nextId(state, 'feedback'),
     missionId,
     claimId: claim.id,
     testerId,
-    summary: input.summary.trim(),
-    stepsTaken: input.stepsTaken.trim(),
-    expectedResult: input.expectedResult.trim(),
-    actualResult: input.actualResult.trim(),
-    severity: input.severity,
-    recommendation: input.recommendation.trim(),
+    note: input.note?.trim() || '',
     ...(input.evidenceUrl?.trim() ? { evidenceUrl: input.evidenceUrl.trim() } : {}),
     status: 'submitted',
     submittedAt: now,
@@ -215,23 +206,45 @@ export function submitFeedback(
   }
 }
 
-export function acceptFeedback(state: ExchangeState, missionId: string, requesterId: UserId, now = new Date().toISOString()) {
+function feedbackNote(feedback: Feedback) {
+  return feedback.note?.trim()
+    || [feedback.summary, feedback.stepsTaken, feedback.recommendation].filter(Boolean).join('\n\n').trim()
+    || 'No written note was added.'
+}
+
+function feedbackTitle(feedback: Feedback) {
+  const firstLine = feedbackNote(feedback).split(/\r?\n/).find(Boolean) || 'Feedback without a note'
+  return firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine
+}
+
+export function acceptFeedback(
+  state: ExchangeState,
+  missionId: string,
+  requesterId: UserId,
+  feedbackIdOrNow?: string,
+  now = new Date().toISOString(),
+) {
   const mission = state.missions.find((item) => item.id === missionId)
-  const feedback = state.feedback.find((item) => item.missionId === missionId && item.status === 'submitted')
-  const claim = state.claims.find((item) => item.missionId === missionId && item.status === 'submitted')
+  // Accept the first pending submission for older callers that only supplied a mission id and timestamp.
+  const legacyTimestamp = feedbackIdOrNow?.match(/^\d{4}-\d{2}-\d{2}T/) ? feedbackIdOrNow : undefined
+  const feedbackId = legacyTimestamp || !feedbackIdOrNow
+    ? state.feedback.find((item) => item.missionId === missionId && item.status === 'submitted')?.id
+    : feedbackIdOrNow
+  const acceptedAt = legacyTimestamp ?? now
+  const feedback = state.feedback.find((item) => item.id === feedbackId && item.missionId === missionId && item.status === 'submitted')
+  const claim = feedback && state.claims.find((item) => item.id === feedback.claimId && item.status === 'submitted')
   if (!mission || mission.requesterId !== requesterId) throw new ExchangeCommandError('Only the requester can accept this feedback')
   if (mission.status !== 'in_review' || !feedback || !claim) throw new ExchangeCommandError('There is no submitted feedback to accept')
-  if (state.transactions.some((transaction) => transaction.type === 'mission_settled' && transaction.referenceId === missionId)) {
-    throw new ExchangeCommandError('This mission has already been settled')
-  }
+  const pendingFeedbackRemains = state.feedback.some((item) => item.missionId === missionId && item.status === 'submitted' && item.id !== feedback.id)
+  const fundingAccount = systemBalance(state, 'escrow') >= EXCHANGE_DEFAULTS.missionCost ? 'system:escrow' : 'system:reward_issuance'
   const transaction: CreditTransaction = {
     id: `tx_${state.sequence + 1}`,
     type: 'mission_settled',
     referenceId: missionId,
     actorId: requesterId,
-    createdAt: now,
+    createdAt: acceptedAt,
     postings: [
-      { accountId: 'system:escrow', amount: -EXCHANGE_DEFAULTS.missionCost, label: 'Escrow released' },
+      { accountId: fundingAccount, amount: -EXCHANGE_DEFAULTS.missionCost, label: fundingAccount === 'system:escrow' ? 'Escrow released' : 'Additional feedback reward issued' },
       { accountId: `user:${claim.testerId}`, amount: EXCHANGE_DEFAULTS.testerReward, label: 'Accepted testing reward' },
       { accountId: 'system:platform', amount: EXCHANGE_DEFAULTS.platformSink, label: 'Platform credit sink' },
     ],
@@ -239,41 +252,45 @@ export function acceptFeedback(state: ExchangeState, missionId: string, requeste
   return {
     ...state,
     sequence: state.sequence + 1,
-    missions: state.missions.map((item) => item.id === missionId ? { ...item, status: 'accepted' as const, acceptedAt: now } : item),
+    missions: state.missions.map((item) => item.id === missionId ? {
+      ...item,
+      status: pendingFeedbackRemains ? 'in_review' as const : 'accepted' as const,
+      acceptedAt,
+    } : item),
     claims: state.claims.map((item) => item.id === claim.id ? { ...item, status: 'completed' as const } : item),
-    feedback: state.feedback.map((item) => item.id === feedback.id ? { ...item, status: 'accepted' as const, acceptedAt: now } : item),
+    feedback: state.feedback.map((item) => item.id === feedback.id ? { ...item, status: 'accepted' as const, acceptedAt } : item),
     transactions: appendTransaction(state, transaction),
   }
 }
 
 function serverPlanningAdapter(feedback: Feedback, runId: string): AgentRun {
-  const severityPriority = feedback.severity === 'high' ? 'P0' : feedback.severity === 'medium' ? 'P1' : 'P2'
+  const note = feedbackNote(feedback)
   const tasks: DevelopmentTask[] = [
     {
       id: `${runId}_task_1`,
       feedbackId: feedback.id,
-      title: `Reproduce: ${feedback.summary}`,
-      description: `Follow the tester path: ${feedback.stepsTaken}`,
-      priority: severityPriority,
-      evidence: feedback.actualResult,
+      title: `Review: ${feedbackTitle(feedback)}`,
+      description: note,
+      priority: 'P2',
+      evidence: feedback.evidenceUrl || note,
       status: 'draft',
     },
     {
       id: `${runId}_task_2`,
       feedbackId: feedback.id,
-      title: `Restore the expected experience`,
-      description: `Target outcome: ${feedback.expectedResult}`,
-      priority: severityPriority === 'P0' ? 'P1' : severityPriority,
-      evidence: feedback.recommendation,
+      title: 'Decide what to change',
+      description: 'Review the note with the product context and choose the smallest useful next step.',
+      priority: 'P2',
+      evidence: note,
       status: 'draft',
     },
     {
       id: `${runId}_task_3`,
       feedbackId: feedback.id,
       title: 'Add a regression check',
-      description: 'Cover the accepted feedback path and preserve the expected result in future releases.',
+      description: 'If this feedback leads to a change, cover the path so the improvement is easy to keep.',
       priority: 'P2',
-      evidence: feedback.evidenceUrl || 'Structured feedback record',
+      evidence: feedback.evidenceUrl || note,
       status: 'draft',
     },
   ]
@@ -288,9 +305,12 @@ function serverPlanningAdapter(feedback: Feedback, runId: string): AgentRun {
   }
 }
 
-export function convertAcceptedFeedbackToTasks(state: ExchangeState, missionId: string, requesterId: UserId) {
+export function convertAcceptedFeedbackToTasks(state: ExchangeState, missionId: string, requesterId: UserId, feedbackId?: string) {
   const mission = state.missions.find((item) => item.id === missionId)
-  const feedback = state.feedback.find((item) => item.missionId === missionId && item.status === 'accepted')
+  const feedback = state.feedback.find((item) => item.missionId === missionId
+    && item.status === 'accepted'
+    && (!feedbackId || item.id === feedbackId)
+    && !state.agentRuns.some((run) => run.feedbackId === item.id))
   if (!mission || mission.requesterId !== requesterId) throw new ExchangeCommandError('Only the requester can create tasks')
   if (!feedback) throw new ExchangeCommandError('Only accepted feedback can be converted into tasks')
   if (state.agentRuns.some((run) => run.feedbackId === feedback.id)) return state
@@ -305,16 +325,13 @@ export function convertAcceptedFeedbackToTasks(state: ExchangeState, missionId: 
 export function needsYouActions(state: ExchangeState, userId: UserId): NeedsYouAction[] {
   const actions: NeedsYouAction[] = []
   for (const mission of state.missions) {
-    const claim = state.claims.find((item) => item.missionId === mission.id)
-    const feedback = state.feedback.find((item) => item.missionId === mission.id)
-    if (mission.status === 'claimed' && claim?.testerId === userId) {
-      actions.push({ id: `submit:${mission.id}`, kind: 'submit_feedback', missionId: mission.id, title: `Complete testing · ${mission.title}`, dueAt: claim.expiresAt })
-    }
-    if (mission.status === 'in_review' && mission.requesterId === userId && feedback) {
-      actions.push({ id: `review:${mission.id}`, kind: 'review_feedback', missionId: mission.id, title: `Review feedback · ${mission.title}`, dueAt: feedback.submittedAt })
-    }
-    if (mission.status === 'accepted' && mission.requesterId === userId && feedback && !state.agentRuns.some((run) => run.feedbackId === feedback.id)) {
-      actions.push({ id: `tasks:${mission.id}`, kind: 'create_tasks', missionId: mission.id, title: `Turn feedback into tasks · ${mission.title}`, dueAt: mission.acceptedAt! })
+    const claims = state.claims.filter((item) => item.missionId === mission.id && item.testerId === userId && item.status === 'active')
+    claims.forEach((claim) => actions.push({ id: `submit:${claim.id}`, kind: 'submit_feedback', missionId: mission.id, title: `Complete testing · ${mission.title}`, dueAt: claim.expiresAt }))
+    if (mission.requesterId === userId) {
+      state.feedback.filter((item) => item.missionId === mission.id && item.status === 'submitted')
+        .forEach((feedback) => actions.push({ id: `review:${feedback.id}`, kind: 'review_feedback', missionId: mission.id, title: `Review feedback · ${mission.title}`, dueAt: feedback.submittedAt }))
+      state.feedback.filter((item) => item.missionId === mission.id && item.status === 'accepted' && !state.agentRuns.some((run) => run.feedbackId === item.id))
+        .forEach((feedback) => actions.push({ id: `tasks:${feedback.id}`, kind: 'create_tasks', missionId: mission.id, title: `Turn feedback into tasks · ${mission.title}`, dueAt: mission.acceptedAt! }))
     }
   }
   return actions

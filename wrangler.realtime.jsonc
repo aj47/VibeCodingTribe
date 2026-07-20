@@ -20,6 +20,10 @@
       {
         "name": "EXCHANGE_STATE",
         "class_name": "ExchangeStore"
+      },
+      {
+        "name": "ACCOUNTS",
+        "class_name": "AccountStore"
       }
     ]
   },
@@ -31,6 +35,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["ExchangeStore"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["AccountStore"]
     }
   ]
 }
