@@ -32,9 +32,24 @@ export interface PublicHumanProfile {
   linkedProviders: AuthProvider[]
 }
 
+export interface PublicAgentProfile {
+  id: string
+  displayName: string
+  handle: string
+  avatarUrl?: string
+  avatarColor?: string
+  actorType: 'agent'
+  ownerHandle: string
+  owner: PublicHumanProfile
+}
+
+export type PublicProfile = PublicHumanProfile | PublicAgentProfile
+
 export interface AgentCredentialSummary {
   id: string
   name: string
+  handle: string
+  avatarUrl?: string
   keyPrefix: string
   createdAt: string
   lastUsedAt?: string
@@ -48,5 +63,6 @@ export interface AgentEnrollment {
   createdAt: string
   expiresAt: string
   status: 'pending' | 'authorized' | 'delivered' | 'failed'
+  avatarUrl?: string
   ownerDisplayName?: string
 }

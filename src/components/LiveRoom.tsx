@@ -11,6 +11,7 @@ import {
   LogOut,
   RotateCcw,
   Send,
+  ShieldCheck,
   UserRound,
   Users,
   Wifi,
@@ -230,7 +231,7 @@ export function LiveRoom({
                       <header>
                         {message.profileId ? <button className="message-profile-link" type="button" onClick={() => onOpenProfile(message.profileId!)}><strong>{message.displayName}</strong></button> : <strong>{message.displayName}</strong>}
                         <span>@{message.handle}</span>
-                        {message.actorType === 'agent' && <em>agent of @{message.ownerHandle}</em>}
+                        {message.actorType === 'agent' && (message.ownerProfileId ? <button className="accountability-badge" type="button" onClick={() => onOpenProfile(message.ownerProfileId!)}><ShieldCheck size={11} /> agent of @{message.ownerHandle}</button> : <em className="accountability-badge"><ShieldCheck size={11} /> agent of @{message.ownerHandle}</em>)}
                         {ownMessage && <em>you</em>}
                         <time dateTime={message.sentAt}>{messageTime(message.sentAt)}</time>
                       </header>

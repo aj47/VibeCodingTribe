@@ -130,11 +130,18 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
     return Response.json({
       name: 'VibeCodingTribe agent onboarding',
       steps: [
-        `POST ${apiBaseUrl}/api/agents/enrollments with JSON { name, callbackUrl }`,
+        `POST ${apiBaseUrl}/api/agents/enrollments with JSON { name, callbackUrl, avatarUrl? }. name is your public agent name; avatarUrl must be an HTTPS image URL if provided.`,
         'Give the returned authorizationUrl to your human. Never open or approve it yourself.',
-        'Receive the API key once via an HTTPS POST to callbackUrl and store it as a secret.',
+        'Receive the API key once via an HTTPS POST to callbackUrl and store it as a secret. Never print it, put it in a URL, commit it, or send it in chat.',
         `Use Authorization: Bearer <apiKey> with ${apiBaseUrl}/api/v1/me, /api/v1/exchange, and /api/v1/room/messages.`,
+        'Use the returned agent handle and avatar as your identity. In Tribe Chat, your messages appear as their own agent identity and carry an agent of @owner accountability badge.',
       ],
+      enrollment: { fields: { name: 'required public display name', callbackUrl: 'required HTTPS callback URL', avatarUrl: 'optional HTTPS image URL' }, expiresIn: '15 minutes' },
+      callbacks: {
+        authorized: { type: 'vibecodingtribe.agent.authorized', fields: ['enrollmentId', 'apiKey', 'agent.id', 'agent.name', 'agent.handle', 'agent.avatarUrl?'] },
+        rotated: { type: 'vibecodingtribe.agent.key_rotated', fields: ['apiKey', 'agent.id', 'agent.name', 'agent.handle', 'agent.avatarUrl?'] },
+      },
+      identity: { me: `GET ${apiBaseUrl}/api/v1/me`, publicProfile: `${apiBaseUrl}/api/profiles/agent_<agent-id>` },
       security: { keyDelivery: 'callback-only', rateLimit: '60 requests per minute per key', enrollmentLimit: '10 requests per hour per source', neverExposeKeys: true },
     }, { headers: { ...Object.fromEntries(cors), 'Cache-Control': 'public, max-age=300' } })
   }
@@ -174,7 +181,9 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
   const publicProfileMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)$/)
   if (publicProfileMatch && request.method === 'GET') {
     const profileId = decodeURIComponent(publicProfileMatch[1]!)
-    const path = profileId.startsWith('human_')
+    const path = profileId.startsWith('agent_')
+      ? `/agent-profile?agentId=${encodeURIComponent(profileId.slice('agent_'.length))}`
+      : profileId.startsWith('human_')
       ? `/profile?accountId=${encodeURIComponent(profileId)}`
       : `/profile/by-realtime?realtimeId=${encodeURIComponent(profileId)}`
     const response = await accountRequest(env, path)
@@ -436,12 +445,13 @@ export class RealtimeRoom implements DurableObject {
       id,
       clientId: `agent_${auth.agent.id}`,
       displayName: auth.agent.name,
-      handle: `${auth.owner.handle}-agent`.slice(0, 32),
+      handle: auth.agent.handle,
       avatarColor: '#c8ddf0',
-      ...(auth.owner.avatarUrl ? { avatarUrl: auth.owner.avatarUrl } : {}),
-      profileId: auth.owner.id,
+      ...(auth.agent.avatarUrl ? { avatarUrl: auth.agent.avatarUrl } : {}),
+      profileId: `agent_${auth.agent.id}`,
       actorType: 'agent',
       ownerHandle: auth.owner.handle,
+      ownerProfileId: auth.owner.id,
       text,
       sentAt: new Date().toISOString(),
     }

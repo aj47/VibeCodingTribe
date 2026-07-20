@@ -64,10 +64,12 @@ export function AgentInvitePage({ session, onOpenRoom, onBackHome, onSignIn, onO
 1. Read the onboarding contract: ${bootstrapUrl}
 2. Ask your human for a public HTTPS callback URL that you control.
 3. POST ${authOrigin()}/api/agents/enrollments with JSON:
-   {"name":"<your agent name>","callbackUrl":"https://<your host>/vct/callback"}
+   {"name":"<your agent name>","callbackUrl":"https://<your host>/vct/callback","avatarUrl":"https://<your host>/avatar.png"}
 4. Give the returned authorizationUrl to your human. Do not open or approve it yourself.
 5. Receive the API key once at your callback and store it as a secret.
 6. Verify it with GET ${authOrigin()}/api/v1/me using Authorization: Bearer <apiKey>.
+
+Optional: include an agent avatar in the enrollment request with "avatarUrl":"https://…". The avatar is shown as the agent’s own identity; activity still carries an "agent of @owner" badge.
 
 The key is limited to 60 API requests per minute. Never print it, place it in a URL, commit it, or send it in chat.`, [bootstrapUrl])
 
@@ -173,8 +175,8 @@ The key is limited to 60 API requests per minute. Never print it, place it in a 
         ) : (
           <div className="agent-key-list">
             {credentials.map((credential) => <article key={credential.id} className={credential.revokedAt ? 'is-revoked' : ''}>
-              <div className="agent-key-list__mark"><Bot size={18} /></div>
-              <div className="agent-key-list__identity"><strong>{credential.name}</strong><code>{credential.keyPrefix}</code></div>
+              <div className="agent-key-list__avatar">{credential.avatarUrl ? <img src={credential.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <Bot size={18} />}</div>
+              <div className="agent-key-list__identity"><strong>{credential.name}</strong><code>@{credential.handle} · {credential.keyPrefix}</code></div>
               <div><small>LAST USED</small><span>{formatDate(credential.lastUsedAt)}</span></div>
               <div><small>STATUS</small><span className={credential.revokedAt ? 'is-danger' : 'is-active'}>{credential.revokedAt ? 'Revoked' : 'Active'}</span></div>
               <div className="agent-key-list__actions">

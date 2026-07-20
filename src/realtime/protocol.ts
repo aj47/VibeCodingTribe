@@ -10,6 +10,7 @@ export interface RealtimeProfile {
   profileId?: string
   actorType?: 'human' | 'agent'
   ownerHandle?: string
+  ownerProfileId?: string
 }
 
 export interface RealtimeMessageRecord {
@@ -22,6 +23,7 @@ export interface RealtimeMessageRecord {
   profileId?: string
   actorType?: 'human' | 'agent'
   ownerHandle?: string
+  ownerProfileId?: string
   text: string
   sentAt: string
 }
@@ -127,6 +129,7 @@ export function isRealtimeProfile(value: unknown): value is RealtimeProfile {
     && (value.profileId === undefined || typeof value.profileId === 'string')
     && (value.actorType === undefined || ['human', 'agent'].includes(String(value.actorType)))
     && (value.ownerHandle === undefined || typeof value.ownerHandle === 'string')
+    && (value.ownerProfileId === undefined || typeof value.ownerProfileId === 'string')
 }
 
 export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessageRecord {
@@ -140,6 +143,7 @@ export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessag
     && (value.profileId === undefined || typeof value.profileId === 'string')
     && (value.actorType === undefined || ['human', 'agent'].includes(String(value.actorType)))
     && (value.ownerHandle === undefined || typeof value.ownerHandle === 'string')
+    && (value.ownerProfileId === undefined || typeof value.ownerProfileId === 'string')
     && typeof value.text === 'string'
     && typeof value.sentAt === 'string'
 }

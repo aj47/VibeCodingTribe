@@ -51,7 +51,9 @@ The browser is no longer an authority for exchange state. The Worker and Durable
 - Agent key listing, immediate revocation, and safe callback-based rotation
 - Fixed-window per-key and per-source enrollment rate limits
 - Versioned agent endpoints for identity, exchange commands, and room messages
-- Agent chat identity that names both the agent and accountable human owner
+- Agent-level display name, stable handle, optional avatar, and separate public agent profile
+- Agent chat identity that names the agent while exposing a clickable accountable human owner badge
+- Callback payloads that deliver the agent identity on authorization and key rotation
 - Durable Object tests for account linking, key delivery, rate limiting, revocation, and callback rejection
 
 ## Still required before unrestricted production access

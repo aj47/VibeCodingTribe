@@ -1,4 +1,4 @@
-import type { AgentCredentialSummary, AgentEnrollment, AuthProvider, AuthSession, PublicHumanProfile } from '../auth/types'
+import type { AgentCredentialSummary, AgentEnrollment, AuthProvider, AuthSession, PublicHumanProfile, PublicProfile } from '../auth/types'
 
 const SESSION_TOKEN_KEY = 'vct-session-token-v1'
 const PRODUCTION_ORIGIN = 'https://vibecodingtribe-realtime.techfren.workers.dev'
@@ -73,7 +73,7 @@ export async function updateOwnProfile(input: Pick<PublicHumanProfile, 'displayN
 
 export async function loadPublicProfile(profileId: string) {
   const response = await fetch(new URL(`/api/profiles/${encodeURIComponent(profileId)}`, authOrigin()), { mode: 'cors' })
-  const result = await response.json() as { profile?: PublicHumanProfile; error?: string }
+  const result = await response.json() as { profile?: PublicProfile; error?: string }
   if (!response.ok || !result.profile) throw new Error(result.error || 'Profile not found')
   return result.profile
 }

@@ -82,4 +82,31 @@ describe('AccountStore', () => {
     expect(firstAccount.id).not.toBe(secondAccount.id)
     expect(conflict.status).toBe(409)
   })
+
+  it('keeps an agent avatar and standalone identity separate from its owner', async () => {
+    const store = createStore()
+    let delivered: { agent?: { name: string; handle: string; avatarUrl?: string } } = {}
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      delivered = JSON.parse(String(init?.body)) as typeof delivered
+      return new Response(null, { status: 204 })
+    }))
+    const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-agent-owner', displayName: 'Owner', handle: 'owner',
+    } }))
+    const { account } = await identityResponse.json() as { account: { id: string } }
+    const enrollmentResponse = await store.fetch(request('/enrollments', {
+      name: 'Scout', callbackUrl: 'https://agent.example/callback', avatarUrl: 'https://cdn.example/scout.png',
+    }))
+    const { enrollment } = await enrollmentResponse.json() as { enrollment: { id: string } }
+
+    const authorized = await store.fetch(request(`/enrollments/${enrollment.id}/authorize`, { accountId: account.id }))
+    const authorization = await authorized.json() as { credential: { id: string; handle: string; avatarUrl?: string } }
+    const profileResponse = await store.fetch(request(`/agent-profile?agentId=${authorization.credential.id}`))
+    const profileResult = await profileResponse.json() as { profile: { displayName: string; handle: string; avatarUrl?: string; ownerHandle: string; actorType: string } }
+
+    expect(authorization.credential.avatarUrl).toBe('https://cdn.example/scout.png')
+    expect(authorization.credential.handle).toBe('scout')
+    expect(delivered.agent).toEqual({ id: expect.any(String), name: 'Scout', handle: 'scout', avatarUrl: 'https://cdn.example/scout.png' })
+    expect(profileResult.profile).toMatchObject({ displayName: 'Scout', handle: 'scout', avatarUrl: 'https://cdn.example/scout.png', ownerHandle: 'owner', actorType: 'agent' })
+  })
 })

@@ -1,4 +1,4 @@
-import type { AuthProvider, PublicHumanProfile } from '../src/auth/types'
+import type { AuthProvider, PublicAgentProfile, PublicHumanProfile } from '../src/auth/types'
 
 export interface AccountIdentity {
   provider: AuthProvider
@@ -25,6 +25,7 @@ interface AgentEnrollmentRecord {
   createdAt: string
   expiresAt: string
   status: 'pending' | 'authorized' | 'delivered' | 'failed'
+  avatarUrl?: string
   ownerAccountId?: string
   deliveryError?: string
 }
@@ -33,6 +34,8 @@ interface AgentCredentialRecord {
   id: string
   accountId: string
   name: string
+  handle: string
+  avatarUrl?: string
   callbackUrl: string
   keyPrefix: string
   secretHash: string
@@ -44,7 +47,7 @@ interface AgentCredentialRecord {
 }
 
 export interface AgentAuthResult {
-  agent: { id: string; name: string }
+  agent: { id: string; name: string; handle: string; avatarUrl?: string }
   owner: PublicHumanProfile
   rateLimit: { limit: number; remaining: number; resetAt: string }
 }
@@ -96,9 +99,12 @@ function publicProfile(account: HumanAccount): PublicHumanProfile {
 }
 
 function credentialSummary(credential: AgentCredentialRecord) {
+  const handle = credential.handle || agentHandle(credential.name, credential.id)
   return {
     id: credential.id,
     name: credential.name,
+    handle,
+    ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}),
     keyPrefix: credential.keyPrefix,
     createdAt: credential.createdAt,
     ...(credential.lastUsedAt ? { lastUsedAt: credential.lastUsedAt } : {}),
@@ -134,6 +140,22 @@ function safeString(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, max) : ''
 }
 
+function validAgentAvatarUrl(value: unknown) {
+  if (value === undefined || value === null || value === '') return undefined
+  if (typeof value !== 'string' || value.length > 2_048) return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function agentHandle(name: string, id: string) {
+  const normalized = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24)
+  return normalized || `agent-${id.slice(0, 8)}`
+}
+
 export class AccountStore implements DurableObject {
   constructor(private readonly state: DurableObjectState) {}
 
@@ -146,6 +168,7 @@ export class AccountStore implements DurableObject {
     if (url.pathname === '/identity/resolve' && request.method === 'POST') return this.resolveIdentity(body)
     if (url.pathname === '/profile' && request.method === 'GET') return this.getProfile(url.searchParams.get('accountId'))
     if (url.pathname === '/profile/by-realtime' && request.method === 'GET') return this.getProfileByRealtime(url.searchParams.get('realtimeId'))
+    if (url.pathname === '/agent-profile' && request.method === 'GET') return this.getAgentProfile(url.searchParams.get('agentId'))
     if (url.pathname === '/profile' && request.method === 'PATCH') return this.updateProfile(body)
     if (url.pathname === '/enrollments' && request.method === 'POST') return this.createEnrollment(body)
     if (url.pathname.startsWith('/enrollments/') && request.method === 'GET') return this.getEnrollment(url.pathname.split('/')[2] ?? '')
@@ -220,6 +243,25 @@ export class AccountStore implements DurableObject {
     return this.getProfile(accountId ?? null)
   }
 
+  private async getAgentProfile(agentId: string | null) {
+    if (!agentId) return json({ error: 'Profile not found' }, 404)
+    const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${agentId}`)
+    if (!credential) return json({ error: 'Profile not found' }, 404)
+    const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
+    if (!account) return json({ error: 'Profile not found' }, 404)
+    const profile: PublicAgentProfile = {
+      id: credential.id,
+      displayName: credential.name,
+      handle: credential.handle || agentHandle(credential.name, credential.id),
+      ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}),
+      avatarColor: '#c8ddf0',
+      actorType: 'agent',
+      ownerHandle: account.handle,
+      owner: publicProfile(account),
+    }
+    return json({ profile })
+  }
+
   private async updateProfile(body: Record<string, unknown> | null) {
     const accountId = typeof body?.accountId === 'string' ? body.accountId : ''
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
@@ -245,7 +287,8 @@ export class AccountStore implements DurableObject {
   private async createEnrollment(body: Record<string, unknown> | null) {
     const name = safeString(body?.name, 64)
     const callbackUrl = validCallback(body?.callbackUrl)
-    if (!name || !callbackUrl) return json({ error: 'A name and public HTTPS callback URL are required' }, 400)
+    const avatarUrl = validAgentAvatarUrl(body?.avatarUrl)
+    if (!name || !callbackUrl || avatarUrl === null) return json({ error: 'A name, public HTTPS callback URL, and optional HTTPS avatar URL are required' }, 400)
     const requesterKey = safeString(body?.requesterKey, 160) || 'unknown'
     const rateKey = `enrollment-rate:${await sha256(requesterKey)}`
     const previousRate = await this.state.storage.get<{ startedAt: number; count: number }>(rateKey)
@@ -260,6 +303,7 @@ export class AccountStore implements DurableObject {
       id: randomToken(24),
       name,
       callbackUrl,
+      ...(avatarUrl ? { avatarUrl } : {}),
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
       status: 'pending',
@@ -275,6 +319,7 @@ export class AccountStore implements DurableObject {
       id: enrollment.id,
       name: enrollment.name,
       callbackUrl: new URL(enrollment.callbackUrl).origin,
+      ...(enrollment.avatarUrl ? { avatarUrl: enrollment.avatarUrl } : {}),
       createdAt: enrollment.createdAt,
       expiresAt: enrollment.expiresAt,
       status: enrollment.status,
@@ -290,7 +335,7 @@ export class AccountStore implements DurableObject {
     if (!enrollment || new Date(enrollment.expiresAt).getTime() <= Date.now()) return json({ error: 'This authorization request expired' }, 410)
     if (!account) return json({ error: 'Human account not found' }, 404)
     if (enrollment.status !== 'pending') return json({ error: 'This authorization request was already used' }, 409)
-    const issued = await this.issueCredential(account, enrollment.name, enrollment.callbackUrl)
+    const issued = await this.issueCredential(account, enrollment.name, enrollment.callbackUrl, enrollment.avatarUrl)
     const credential = issued.credential
     enrollment.ownerAccountId = account.id
     enrollment.status = 'authorized'
@@ -303,7 +348,7 @@ export class AccountStore implements DurableObject {
           type: 'vibecodingtribe.agent.authorized',
           enrollmentId: enrollment.id,
           apiKey: issued.apiKey,
-          agent: { id: credential.id, name: credential.name },
+          agent: { id: credential.id, name: credential.name, handle: credential.handle || agentHandle(credential.name, credential.id), ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}) },
           owner: publicProfile(account),
         }),
       })
@@ -323,7 +368,7 @@ export class AccountStore implements DurableObject {
     }
   }
 
-  private async issueCredential(account: HumanAccount, name: string, callbackUrl: string) {
+  private async issueCredential(account: HumanAccount, name: string, callbackUrl: string, avatarUrl?: string) {
     const id = randomToken(12)
     const secret = randomToken(32)
     const apiKey = `vct_agent_${id}_${secret}`
@@ -331,6 +376,8 @@ export class AccountStore implements DurableObject {
       id,
       accountId: account.id,
       name,
+      handle: agentHandle(name, id),
+      ...(avatarUrl ? { avatarUrl } : {}),
       callbackUrl,
       keyPrefix: `vct_agent_${id.slice(0, 6)}…`,
       secretHash: await sha256(secret),
@@ -349,7 +396,9 @@ export class AccountStore implements DurableObject {
 
   private async authenticateCredential(body: Record<string, unknown> | null) {
     const token = typeof body?.token === 'string' ? body.token : ''
-    const match = token.match(/^vct_agent_([A-Za-z0-9_-]{8,32})_([A-Za-z0-9_-]{32,80})$/)
+    // Agent ids are 16 base64url characters. Keep the split deterministic because
+    // the secret may also contain underscores.
+    const match = token.match(/^vct_agent_([A-Za-z0-9_-]{16})_([A-Za-z0-9_-]{32,80})$/)
     if (!match) return json({ error: 'Invalid API key' }, 401)
     const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${match[1]}`)
     if (!credential || credential.revokedAt || credential.secretHash !== await sha256(match[2]!)) return json({ error: 'Invalid or revoked API key' }, 401)
@@ -367,7 +416,7 @@ export class AccountStore implements DurableObject {
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
     if (!account) return json({ error: 'Owning human account no longer exists' }, 401)
     const result: AgentAuthResult = {
-      agent: { id: credential.id, name: credential.name },
+      agent: { id: credential.id, name: credential.name, handle: credential.handle || agentHandle(credential.name, credential.id), ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}) },
       owner: publicProfile(account),
       rateLimit: {
         limit: RATE_LIMIT,
@@ -402,12 +451,12 @@ export class AccountStore implements DurableObject {
     if (credential.revokedAt) return json({ error: 'Revoked keys cannot be rotated' }, 409)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
     if (!account) return json({ error: 'Account not found' }, 404)
-    const issued = await this.issueCredential(account, credential.name, credential.callbackUrl)
+    const issued = await this.issueCredential(account, credential.name, credential.callbackUrl, credential.avatarUrl)
     try {
       const response = await fetch(credential.callbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'User-Agent': 'VibeCodingTribe-Agent-Rotation/1.0' },
-        body: JSON.stringify({ type: 'vibecodingtribe.agent.key_rotated', apiKey: issued.apiKey, agent: { id: issued.credential.id, name: issued.credential.name } }),
+        body: JSON.stringify({ type: 'vibecodingtribe.agent.key_rotated', apiKey: issued.apiKey, agent: { id: issued.credential.id, name: issued.credential.name, handle: issued.credential.handle || agentHandle(issued.credential.name, issued.credential.id), ...(issued.credential.avatarUrl ? { avatarUrl: issued.credential.avatarUrl } : {}) } }),
       })
       if (!response.ok) throw new Error('Callback rejected the rotated key')
       credential.revokedAt = new Date().toISOString()

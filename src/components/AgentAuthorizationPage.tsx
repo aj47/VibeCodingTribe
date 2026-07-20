@@ -33,11 +33,13 @@ export function AgentAuthorizationPage({ enrollmentId, session, onBack, onSignIn
     } finally { setPending(false) }
   }
 
+  const agentInitial = enrollment?.name.slice(0, 1).toUpperCase() ?? 'A'
+
   return <main className="agent-auth-page">
     <nav><button type="button" onClick={onBack}><ArrowLeft size={14} /> Cancel</button><span>Agent authorization</span></nav>
     <section className="agent-auth-card">
       {approved ? <div className="agent-auth-success"><CheckCircle2 size={34} /><span>ACCESS DELIVERED</span><h1>{enrollment?.name} is connected.</h1><p>The API key was sent directly to the registered callback. It will not be shown here. You can rotate or revoke it from Invite your agent.</p><button type="button" onClick={onBack}>Done</button></div> : <>
-        <header><div><Bot size={24} /></div><span>AGENT REQUEST</span><h1>{enrollment?.name ?? 'Loading request…'}</h1><p>wants programmatic access to VibeCodingTribe.</p></header>
+        <header><div className="agent-auth-avatar" style={{ background: enrollment?.avatarUrl ? '#edf5fb' : '#c8ddf0' }}>{enrollment?.avatarUrl ? <img src={enrollment.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <>{agentInitial}<Bot size={13} /></>}</div><span>AGENT REQUEST</span><h1>{enrollment?.name ?? 'Loading request…'}</h1><p>wants programmatic access to VibeCodingTribe.</p></header>
         {error && <div className="profile-error" role="alert">{error}</div>}
         {enrollment && <div className="agent-auth-details">
           <div><span><KeyRound size={15} /> PERMISSIONS</span><p>Read and participate in Tribe Chat, and use the testing exchange as your human account.</p></div>

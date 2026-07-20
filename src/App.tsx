@@ -25,6 +25,7 @@ import {
   RealtimeRoomClient,
   saveRealtimeProfile,
 } from './services/realtime'
+import { mergeRealtimeProfiles } from './realtime/participants'
 
 type Surface = 'home' | 'exchange' | 'room' | 'invite-agent' | 'profile' | 'authorize-agent'
 type ConnectionStatus = 'connected' | 'syncing' | 'offline'
@@ -152,11 +153,7 @@ export function App() {
 
   const rememberProfiles = useCallback((profiles: RealtimeProfile[]) => {
     if (!profiles.length) return
-    setKnownProfiles((current) => {
-      const next = new Map(current.map((item) => [item.clientId, item]))
-      for (const item of profiles) next.set(item.clientId, item)
-      return [...next.values()]
-    })
+    setKnownProfiles((current) => mergeRealtimeProfiles(current, profiles))
   }, [])
 
   const rememberMessageAuthors = useCallback((records: RealtimeMessageRecord[]) => {
@@ -169,6 +166,7 @@ export function App() {
       ...(record.profileId ? { profileId: record.profileId } : {}),
       ...(record.actorType ? { actorType: record.actorType } : {}),
       ...(record.ownerHandle ? { ownerHandle: record.ownerHandle } : {}),
+      ...(record.ownerProfileId ? { ownerProfileId: record.ownerProfileId } : {}),
     })))
   }, [rememberProfiles])
 
