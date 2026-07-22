@@ -24,6 +24,7 @@ import {
   type RealtimeProfile,
 } from '../realtime/protocol'
 import { Brand } from './Brand'
+import { ThemeToggle } from './ThemeToggle'
 
 export type MessageDeliveryState = 'sending' | 'failed'
 
@@ -140,6 +141,7 @@ export function LiveRoom({
         <div className="live-topbar__actions">
           <button className="room-exchange-link" type="button" onClick={onOpenExchange}><ClipboardCheck size={13} /> Missions</button>
           <button className="room-invite-agent" type="button" onClick={onInviteAgent}><Bot size={13} /> Invite your agent</button>
+          <ThemeToggle />
           <div className={`connection-chip connection-chip--${connectionStatus}`}>
             {connectionStatus === 'connected' ? <Wifi size={13} /> : <WifiOff size={13} />}
             <span>{connectionStatus === 'connected' ? 'Live' : connectionStatus}</span>
