@@ -28,6 +28,7 @@ import { COMMUNITY_INTENTS, type CommunityPostInput, type CommunityPostIntent } 
 import type { RealtimeMessageRecord, RealtimeProfile } from '../realtime/protocol'
 import { validateCommunityImage } from '../services/media'
 import { Brand } from './Brand'
+import { ThemeToggle } from './ThemeToggle'
 
 interface CommunityFeedProps {
   profile: RealtimeProfile
@@ -254,6 +255,7 @@ export function CommunityFeed({
       </nav>
       <div className="community-topbar__actions">
         <span className={`community-live community-live--${connectionStatus}`}><i />{connectionStatus === 'connected' ? `${onlineCount} live` : connectionStatus}</span>
+        <ThemeToggle />
         <button type="button" className="community-icon-button" aria-label="Notifications"><Bell size={17} /></button>
         {canPost ? <div className="community-account">
           <button type="button" className="community-account__trigger" aria-expanded={accountOpen} onClick={() => setAccountOpen((open) => !open)}><Avatar item={profile} /><span>@{profile.handle}</span><ChevronDown size={13} /></button>
