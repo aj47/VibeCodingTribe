@@ -17,6 +17,8 @@ interface Env extends AuthEnv {
   LIVE_ROOM: DurableObjectNamespace
   EXCHANGE_STATE: DurableObjectNamespace
   ACCOUNTS: DurableObjectNamespace
+  MEDIA?: R2Bucket
+  LOCAL_PREVIEW?: string
 }
 
 interface ConnectionAttachment extends RealtimeProfile {
@@ -27,6 +29,13 @@ interface ConnectionAttachment extends RealtimeProfile {
 const ROOM_NAME = LIVE_ROOM_KEY
 const HISTORY_KEY = 'messages'
 const HISTORY_LIMIT = 200
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+}
 
 function json(value: unknown, status = 200) {
   return Response.json(value, {
@@ -60,6 +69,50 @@ function exchangeCorsHeaders(request: Request, env: Env) {
     headers.set('Vary', 'Origin')
   }
   return headers
+}
+
+function isLocalPreviewRequest(request: Request, env: Env) {
+  const origin = request.headers.get('Origin') ?? ''
+  return env.LOCAL_PREVIEW === 'true' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+}
+
+async function handleMediaRequest(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url)
+  const cors = exchangeCorsHeaders(request, env)
+  if (request.method === 'OPTIONS' && url.pathname === '/api/uploads/images') {
+    return new Response(null, { status: 204, headers: cors })
+  }
+  const mediaMatch = url.pathname.match(/^\/media\/([a-f0-9-]+\.(?:png|jpg|webp|gif))$/)
+  if (mediaMatch && request.method === 'GET') {
+    if (!env.MEDIA) return Response.json({ error: 'Media storage is unavailable' }, { status: 503 })
+    const object = await env.MEDIA.get(mediaMatch[1]!)
+    if (!object) return Response.json({ error: 'Image not found' }, { status: 404 })
+    const headers = new Headers({
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+      'X-Content-Type-Options': 'nosniff',
+      ETag: object.httpEtag,
+    })
+    return new Response(object.body, { headers })
+  }
+  if (url.pathname !== '/api/uploads/images' || request.method !== 'POST') return null
+  if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return Response.json({ error: 'Origin not allowed' }, { status: 403, headers: cors })
+  const session = await authenticateRequest(request, env)
+  if (!session && !isLocalPreviewRequest(request, env)) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+  if (!env.MEDIA) return Response.json({ error: 'Media storage is unavailable' }, { status: 503, headers: cors })
+  const contentType = request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() ?? ''
+  const extension = IMAGE_EXTENSIONS[contentType]
+  if (!extension) return Response.json({ error: 'Paste a PNG, JPEG, WebP, or GIF image' }, { status: 415, headers: cors })
+  const declaredSize = Number(request.headers.get('Content-Length') ?? 0)
+  if (declaredSize > MAX_IMAGE_BYTES) return Response.json({ error: 'Images must be 5 MB or smaller' }, { status: 413, headers: cors })
+  const bytes = await request.arrayBuffer()
+  if (!bytes.byteLength || bytes.byteLength > MAX_IMAGE_BYTES) return Response.json({ error: 'Images must be between 1 byte and 5 MB' }, { status: 413, headers: cors })
+  const key = `${crypto.randomUUID()}.${extension}`
+  await env.MEDIA.put(key, bytes, {
+    httpMetadata: { contentType },
+    customMetadata: { uploadedBy: session?.accountId ?? 'local-preview' },
+  })
+  return Response.json({ url: `${url.origin}/media/${key}` }, { status: 201, headers: cors })
 }
 
 async function exchangeActor(request: Request, env: Env): Promise<ExchangeActor | null> {
@@ -256,6 +309,8 @@ export default {
     if (authResponse) return authResponse
     const accountResponse = await handleAccountApi(request, env)
     if (accountResponse) return accountResponse
+    const mediaResponse = await handleMediaRequest(request, env)
+    if (mediaResponse) return mediaResponse
     if (url.pathname.startsWith('/api/v1/')) return handleAgentApi(request, env)
     if (url.pathname === '/api/exchange') return handleExchangeRequest(request, env)
     if (url.pathname === '/health') {
@@ -272,7 +327,8 @@ export default {
     if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return json({ error: 'Origin not allowed' }, 403)
     const session = await authenticateRequest(request, env)
     const roomUrl = new URL(request.url)
-    const canSend = Boolean(session)
+    const localPreview = isLocalPreviewRequest(request, env)
+    const canSend = Boolean(session) || localPreview
     if (session) {
       roomUrl.searchParams.set('clientId', await realtimeClientId(session))
       roomUrl.searchParams.set('displayName', session.displayName)
@@ -351,15 +407,31 @@ export class RealtimeRoom implements DurableObject {
 
     const profile = socket.deserializeAttachment() as ConnectionAttachment | null
     if (!profile) {
-      this.send(socket, { type: 'error', message: 'Connection identity was unavailable', clientMessageId: event.message.id })
+      this.send(socket, { type: 'error', message: 'Connection identity was unavailable', ...(event.type === 'send' ? { clientMessageId: event.message.id } : {}) })
       return
     }
     if (!profile.canSend) {
-      this.send(socket, { type: 'error', message: 'Sign in with GitHub or LinkedIn to send messages', clientMessageId: event.message.id })
+      this.send(socket, { type: 'error', message: 'Sign in with GitHub or LinkedIn to interact', ...(event.type === 'send' ? { clientMessageId: event.message.id } : {}) })
       return
     }
 
     const history = (await this.state.storage.get<RealtimeMessageRecord[]>(HISTORY_KEY)) ?? []
+    if (event.type === 'set_like') {
+      const messageIndex = history.findIndex((message) => message.id === event.messageId)
+      if (messageIndex === -1) {
+        this.send(socket, { type: 'error', message: 'Message was not found' })
+        return
+      }
+      const likedBy = new Set(history[messageIndex]!.likedByClientIds ?? [])
+      if (event.liked) likedBy.add(profile.clientId)
+      else likedBy.delete(profile.clientId)
+      const message = { ...history[messageIndex]!, likedByClientIds: [...likedBy] }
+      const nextHistory = [...history]
+      nextHistory[messageIndex] = message
+      await this.state.storage.put(HISTORY_KEY, nextHistory)
+      this.broadcast({ type: 'message', message })
+      return
+    }
     const existing = history.find((message) => message.id === event.message.id)
     if (existing) {
       this.send(socket, { type: 'message', message: existing })
@@ -378,6 +450,12 @@ export class RealtimeRoom implements DurableObject {
       ...(profile.ownerHandle ? { ownerHandle: profile.ownerHandle } : {}),
       text: event.message.text,
       sentAt: new Date().toISOString(),
+      ...(event.message.intent ? { intent: event.message.intent } : {}),
+      ...(event.message.parentId ? { parentId: event.message.parentId } : {}),
+      ...(event.message.commentKind ? { commentKind: event.message.commentKind } : {}),
+      ...(event.message.buildName ? { buildName: event.message.buildName } : {}),
+      ...(event.message.buildUrl ? { buildUrl: event.message.buildUrl } : {}),
+      ...(event.message.imageUrl ? { imageUrl: event.message.imageUrl } : {}),
     }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
@@ -434,8 +512,25 @@ export class RealtimeRoom implements DurableObject {
     }
     const history = (await this.state.storage.get<RealtimeMessageRecord[]>(HISTORY_KEY)) ?? []
     if (request.method === 'GET') return json({ messages: history })
-    let body: { text?: string; id?: string }
-    try { body = await request.json() as { text?: string; id?: string } } catch { return json({ error: 'Invalid JSON body' }, 400) }
+    let body: { text?: string; id?: string; action?: string; messageId?: string; liked?: boolean }
+    try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid JSON body' }, 400) }
+    if (body.action === 'set_like') {
+      if (!body.messageId || !/^[a-zA-Z0-9:_-]{8,160}$/.test(body.messageId) || typeof body.liked !== 'boolean') {
+        return json({ error: 'messageId and liked are required' }, 400)
+      }
+      const messageIndex = history.findIndex((message) => message.id === body.messageId)
+      if (messageIndex === -1) return json({ error: 'Message not found' }, 404)
+      const clientId = `agent_${auth.agent.id}`
+      const likedBy = new Set(history[messageIndex]!.likedByClientIds ?? [])
+      if (body.liked) likedBy.add(clientId)
+      else likedBy.delete(clientId)
+      const message = { ...history[messageIndex]!, likedByClientIds: [...likedBy] }
+      const nextHistory = [...history]
+      nextHistory[messageIndex] = message
+      await this.state.storage.put(HISTORY_KEY, nextHistory)
+      this.broadcast({ type: 'message', message })
+      return json({ message })
+    }
     const text = body.text?.trim()
     if (!text || text.length > 4_000) return json({ error: 'Message text must be 1-4000 characters' }, 400)
     const id = body.id && /^[a-zA-Z0-9:_-]{8,160}$/.test(body.id) ? body.id : `agent:${auth.agent.id}:${crypto.randomUUID()}`

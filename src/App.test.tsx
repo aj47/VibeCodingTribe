@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { installExchangeApiMock } from './test/exchange-api'
 import { App } from './App'
 
-describe('App', () => {
+describe('App community loop', () => {
   beforeEach(() => {
     window.localStorage.clear()
     window.sessionStorage.clear()
@@ -11,42 +11,67 @@ describe('App', () => {
     installExchangeApiMock()
   })
 
-  it('introduces the testing exchange and keeps both identity providers', () => {
+  it('makes the community conversation the public home feed', () => {
     render(<App />)
 
-    expect(screen.getByRole('heading', { name: /Find real testers.*Join the tribe/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Find testers for your product/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Tribe Chat' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Continue with GitHub/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Continue with LinkedIn/i })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Real testers. Useful evidence.' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'What are you building?' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Community feed' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Tribe Wire' })).toHaveTextContent(/same community stream.*not a separate chat room/i)
+    expect(screen.getByRole('button', { name: 'GitHub' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'LinkedIn' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Local preview' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start local preview' })).toBeInTheDocument()
   })
 
-  it('opens the public room without auth and gates only posting', () => {
+  it('redirects the former chat route into the same main feed', async () => {
     window.history.replaceState({}, '', '/r/general')
     render(<App />)
 
-    expect(screen.getByRole('main')).toHaveClass('live-layout')
-    expect(screen.getByText('Public')).toBeInTheDocument()
-    expect(screen.getByText(/Everyone’s shared room.*sign in to post/i)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Tribe Chat' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Missions' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Sign in to send messages' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'GitHub' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'LinkedIn' })).toBeInTheDocument()
-    expect(screen.queryByRole('textbox', { name: 'Message general' })).not.toBeInTheDocument()
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    expect(screen.getByRole('region', { name: 'Community feed' })).toBeInTheDocument()
+    expect(screen.getByText(/conversation that used to live in Tribe Chat/i)).toBeInTheDocument()
   })
 
-  it('opens the agent setup page from the public landing page', () => {
+  it('uses Missions as the Needs Feedback view of the same feed', () => {
+    window.history.replaceState({}, '', '/missions')
     render(<App />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Invite your agent' }))
+    expect(screen.getByRole('heading', { name: 'Builders who need your eyes' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Posts needing feedback' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Needs feedback' })[0]).toHaveClass('is-active')
+  })
+
+  it('redirects the retired exchange route to Needs Feedback', async () => {
+    window.history.replaceState({}, '', '/exchange')
+    render(<App />)
+
+    await waitFor(() => expect(window.location.pathname).toBe('/missions'))
+    expect(screen.getByRole('heading', { name: 'Builders who need your eyes' })).toBeInTheDocument()
+  })
+
+  it('preserves and consumes an OAuth session while redirecting the retired exchange route', () => {
+    window.history.replaceState({}, '', '/exchange#vct_session=signed.callback-token')
+    render(<App />)
+
+    expect(window.location.pathname).toBe('/missions')
+    expect(window.location.hash).toBe('')
+    expect(window.localStorage.getItem('vct-session-token-v1')).toBe('signed.callback-token')
+  })
+
+  it('shows OAuth callback failures after redirecting the retired exchange route', () => {
+    window.history.replaceState({}, '', '/exchange?auth_error=Could+not+complete+linkedin+sign-in')
+    render(<App />)
+
+    expect(window.location.pathname).toBe('/missions')
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not complete linkedin sign-in')
+  })
+
+  it('opens agent setup from the community shell', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Agent access' }))
 
     expect(window.location.pathname).toBe('/invite-agent')
     expect(screen.getByRole('heading', { name: /Give your agent a key.*Keep a human accountable/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy URL' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy full prompt' })).toBeInTheDocument()
-    expect(screen.getByText(/Your human account is the trust anchor/i)).toBeInTheDocument()
   })
 
   it('renders the agent setup page directly', () => {
@@ -57,35 +82,19 @@ describe('App', () => {
     expect(screen.getByText(/POST .*api\/agents\/enrollments/i)).toBeInTheDocument()
   })
 
-  it('canonicalizes the removed app route to the public root', async () => {
-    window.history.replaceState({}, '', '/app')
-    render(<App />)
-
-    await waitFor(() => expect(window.location.pathname).toBe('/'))
-  })
-
-  it('requires sign-in when opening the testing exchange', async () => {
-    render(<App />)
-
-    fireEvent.click(screen.getByRole('button', { name: /Find testers for your product/i }))
-
-    expect(window.location.pathname).toBe('/exchange')
-    expect(await screen.findByRole('heading', { name: 'Connect to the exchange' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Sign in with LinkedIn' })).toBeInTheDocument()
-    expect(screen.getByRole('main')).toHaveClass('exchange-service-state')
-    await waitFor(() => {
-      expect(window.localStorage.getItem('vct-workspace-v3')).toBeNull()
-      expect(window.localStorage.getItem('vct-realtime-profile-v1')).toBeNull()
-      expect(window.localStorage.getItem('vct-realtime-outbox-v1')).toBeNull()
-    })
-  })
-
   it('does not enable anonymous posting from a stale demo flag', () => {
     window.sessionStorage.setItem('vct-local-demo-v1', 'true')
-    window.history.replaceState({}, '', '/r/general')
     render(<App />)
 
-    expect(screen.getByRole('region', { name: 'Sign in to send messages' })).toBeInTheDocument()
-    expect(screen.queryByRole('textbox', { name: 'Message general' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Share what you are building' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Local preview' })).toBeInTheDocument()
+  })
+
+  it('enables the development composer through the explicit local preview', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Local preview' }))
+
+    expect(screen.getByRole('textbox', { name: 'Share what you are building' })).toBeInTheDocument()
+    expect(window.sessionStorage.getItem('vct-community-preview-v1')).toBe('true')
   })
 })

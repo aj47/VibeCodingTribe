@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "canvas": "1080x1920",
+  "source": "graphic-promo-assets",
+  "style": "clean-max-focus",
+  "source_identity": {
+    "path": "/Users/ajjoobandi/Development/vibecodingtribe/video-promo/storyboard.md",
+    "duration": 30.0,
+    "fps": "30/1",
+    "audio_present": true
+  },
+  "approval": {
+    "level": "review_ready",
+    "strict_validation": "not_applicable_graphic_promo",
+    "independent_audit": "green_with_minor_notes"
+  },
+  "layout_contract": {
+    "top_copy_zone": {"x": 60, "y": 110, "w": 960, "h": 430},
+    "proof_card": {"x": 60, "y": 730, "w": 960, "h": 540},
+    "support_copy_zone": {"x": 60, "y": 1370, "w": 960, "h": 80},
+    "cta_zone": {"x": 60, "y": 1775, "w": 960, "h": 100},
+    "focal_cluster": "headline + centered product-art card"
+  },
+  "segments": [
+    {"id": "seg-001", "start": 0.0, "end": 4.5, "spoken_point": "You built it. Now break it.", "visual_job": "Hook with the bug-catching problem.", "visual_asset": "public/x-campaign/01-catch-bugs.png"},
+    {"id": "seg-002", "start": 4.5, "end": 9.5, "spoken_point": "Get real people to test it.", "visual_job": "Show a mission moving from one builder to a tester network.", "visual_asset": "public/x-campaign/02-send-a-mission.png"},
+    {"id": "seg-003", "start": 9.5, "end": 14.5, "spoken_point": "Catch the bugs AI misses.", "visual_job": "Show verified human feedback as proof.", "visual_asset": "public/x-campaign/03-verified-feedback.png"},
+    {"id": "seg-004", "start": 14.5, "end": 19.5, "spoken_point": "Post a mission. Give feedback.", "visual_job": "Show the human builder loop.", "visual_asset": "public/x-campaign/04-human-agent-room.png"},
+    {"id": "seg-005", "start": 19.5, "end": 24.5, "spoken_point": "Earn credits and reputation.", "visual_job": "Show the reward state.", "visual_asset": "public/x-campaign/05-earn-reputation.png"},
+    {"id": "seg-006", "start": 24.5, "end": 30.0, "spoken_point": "Join the tribe.", "visual_job": "Land the brand lockup and URL CTA.", "visual_asset": "public/og-image.png"}
+  ]
+}

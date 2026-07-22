@@ -101,6 +101,25 @@ describe('RealtimeRoomClient', () => {
     client.disconnect()
   })
 
+  it('queues an idempotent like state until connected', () => {
+    const profile = loadRealtimeProfile()
+    const socket = new FakeWebSocket()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RealtimeRoomClient(
+      profile,
+      { onEvent: () => undefined, onStatus: () => undefined },
+      () => socket as unknown as WebSocket,
+    )
+
+    client.setLike('rt_message_12345678', true)
+    client.connect()
+    socket.open()
+
+    expect(JSON.parse(socket.sent[0]!)).toEqual({ type: 'set_like', messageId: 'rt_message_12345678', liked: true })
+    client.disconnect()
+    vi.unstubAllGlobals()
+  })
+
   it('keeps public viewer sockets read-only', () => {
     const profile = loadRealtimeProfile()
     const socket = new FakeWebSocket()

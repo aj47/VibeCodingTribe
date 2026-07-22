@@ -1,4 +1,4 @@
-import type { AuthProvider, PublicAgentProfile, PublicHumanProfile } from '../src/auth/types'
+import type { AuthProvider, ProfileBadgeAward, PublicAgentProfile, PublicHumanProfile } from '../src/auth/types'
 
 export interface AccountIdentity {
   provider: AuthProvider
@@ -16,6 +16,7 @@ export interface HumanAccount extends PublicHumanProfile {
   agentCredentialIds: string[]
   createdAt: string
   updatedAt: string
+  badges?: ProfileBadgeAward[]
 }
 
 interface AgentEnrollmentRecord {
@@ -92,8 +93,11 @@ function publicProfile(account: HumanAccount): PublicHumanProfile {
     realtimeClientId: account.realtimeClientId,
     ...(account.avatarUrl ? { avatarUrl: account.avatarUrl } : {}),
     ...(account.headline ? { headline: account.headline } : {}),
+    ...(account.bio ? { bio: account.bio } : {}),
     ...(account.githubUrl ? { githubUrl: account.githubUrl } : {}),
     ...(account.linkedinUrl ? { linkedinUrl: account.linkedinUrl } : {}),
+    ...(account.websiteUrl ? { websiteUrl: account.websiteUrl } : {}),
+    badges: account.badges ?? [{ id: 'early_builder', awardedAt: account.createdAt, source: 'automatic' }],
     linkedProviders: account.linkedProviders,
   }
 }
@@ -131,6 +135,17 @@ function validProfileUrl(value: unknown, provider: AuthProvider) {
     const url = new URL(value)
     const allowed = provider === 'github' ? ['github.com', 'www.github.com'] : ['linkedin.com', 'www.linkedin.com']
     return url.protocol === 'https:' && allowed.includes(url.hostname) ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function validWebsiteUrl(value: unknown) {
+  if (value === '' || value === null || value === undefined) return undefined
+  if (typeof value !== 'string' || value.length > 2048) return null
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol) ? url.toString() : null
   } catch {
     return null
   }
@@ -206,6 +221,7 @@ export class AccountStore implements DurableObject {
         linkedProviders: [identity.provider],
         identities: [identity],
         agentCredentialIds: [],
+        badges: [{ id: 'early_builder', awardedAt: now, source: 'automatic' }],
         createdAt: now,
         updatedAt: now,
       }
@@ -268,16 +284,20 @@ export class AccountStore implements DurableObject {
     if (!account) return json({ error: 'Profile not found' }, 404)
     const githubUrl = validProfileUrl(body?.githubUrl, 'github')
     const linkedinUrl = validProfileUrl(body?.linkedinUrl, 'linkedin')
-    if (githubUrl === null || linkedinUrl === null) return json({ error: 'Profile links must be valid GitHub or LinkedIn HTTPS URLs' }, 400)
+    const websiteUrl = validWebsiteUrl(body?.websiteUrl)
+    if (githubUrl === null || linkedinUrl === null || websiteUrl === null) return json({ error: 'Profile links must use valid HTTP or HTTPS URLs' }, 400)
     const displayName = safeString(body?.displayName, 40)
     const headline = safeString(body?.headline, 120)
+    const bio = safeString(body?.bio, 320)
     if (!displayName) return json({ error: 'Display name is required' }, 400)
     const updated: HumanAccount = {
       ...account,
       displayName,
       headline,
+      bio,
       githubUrl,
       linkedinUrl,
+      websiteUrl,
       updatedAt: new Date().toISOString(),
     }
     await this.state.storage.put(`${ACCOUNT_PREFIX}${accountId}`, updated)

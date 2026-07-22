@@ -26,6 +26,13 @@ export interface RealtimeMessageRecord {
   ownerProfileId?: string
   text: string
   sentAt: string
+  intent?: 'chat' | 'showcase' | 'needs_feedback' | 'update' | 'question'
+  parentId?: string
+  commentKind?: 'reply' | 'feedback'
+  buildName?: string
+  buildUrl?: string
+  imageUrl?: string
+  likedByClientIds?: string[]
 }
 
 export interface RealtimeSendEvent {
@@ -33,10 +40,22 @@ export interface RealtimeSendEvent {
   message: {
     id: string
     text: string
+    intent?: 'chat' | 'showcase' | 'needs_feedback' | 'update' | 'question'
+    parentId?: string
+    commentKind?: 'reply' | 'feedback'
+    buildName?: string
+    buildUrl?: string
+    imageUrl?: string
   }
 }
 
-export type RealtimeClientEvent = RealtimeSendEvent
+export interface RealtimeSetLikeEvent {
+  type: 'set_like'
+  messageId: string
+  liked: boolean
+}
+
+export type RealtimeClientEvent = RealtimeSendEvent | RealtimeSetLikeEvent
 
 export type RealtimeServerEvent =
   | {
@@ -73,18 +92,52 @@ export function normalizeAvatarUrl(value: unknown) {
 }
 
 export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | null {
-  if (!isRecord(value) || value.type !== 'send' || !isRecord(value.message)) return null
+  if (!isRecord(value)) return null
+  if (value.type === 'set_like') {
+    if (typeof value.messageId !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(value.messageId)) return null
+    if (typeof value.liked !== 'boolean') return null
+    return { type: 'set_like', messageId: value.messageId, liked: value.liked }
+  }
+  if (value.type !== 'send' || !isRecord(value.message)) return null
   const { id, text } = value.message
   if (typeof id !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(id)) return null
   if (typeof text !== 'string') return null
   const trimmed = text.trim()
-  if (!trimmed || trimmed.length > MAX_REALTIME_MESSAGE_LENGTH) return null
+  const imageUrl = normalizeHttpUrl(value.message.imageUrl)
+  if ((!trimmed && !imageUrl) || trimmed.length > MAX_REALTIME_MESSAGE_LENGTH) return null
+  const intent = ['chat', 'showcase', 'needs_feedback', 'update', 'question'].includes(String(value.message.intent))
+    ? value.message.intent as 'chat' | 'showcase' | 'needs_feedback' | 'update' | 'question'
+    : undefined
+  const parentId = typeof value.message.parentId === 'string' && /^[a-zA-Z0-9:_-]{8,160}$/.test(value.message.parentId)
+    ? value.message.parentId
+    : undefined
+  const buildName = typeof value.message.buildName === 'string' ? value.message.buildName.trim().slice(0, 80) : undefined
+  const buildUrl = normalizeHttpUrl(value.message.buildUrl)
+  const commentKind = ['reply', 'feedback'].includes(String(value.message.commentKind))
+    ? value.message.commentKind as 'reply' | 'feedback'
+    : undefined
   return {
     type: 'send',
     message: {
       id,
       text: trimmed,
+      ...(intent ? { intent } : {}),
+      ...(parentId ? { parentId } : {}),
+      ...(commentKind ? { commentKind } : {}),
+      ...(buildName ? { buildName } : {}),
+      ...(buildUrl ? { buildUrl } : {}),
+      ...(imageUrl ? { imageUrl } : {}),
     },
+  }
+}
+
+function normalizeHttpUrl(value: unknown) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 2_048) return undefined
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol) ? url.toString() : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -146,4 +199,15 @@ export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessag
     && (value.ownerProfileId === undefined || typeof value.ownerProfileId === 'string')
     && typeof value.text === 'string'
     && typeof value.sentAt === 'string'
+    && (value.intent === undefined || ['chat', 'showcase', 'needs_feedback', 'update', 'question'].includes(String(value.intent)))
+    && (value.parentId === undefined || typeof value.parentId === 'string')
+    && (value.commentKind === undefined || ['reply', 'feedback'].includes(String(value.commentKind)))
+    && (value.buildName === undefined || typeof value.buildName === 'string')
+    && (value.buildUrl === undefined || normalizeHttpUrl(value.buildUrl) !== undefined)
+    && (value.imageUrl === undefined || normalizeHttpUrl(value.imageUrl) !== undefined)
+    && (value.likedByClientIds === undefined || (
+      Array.isArray(value.likedByClientIds)
+      && value.likedByClientIds.length <= 10_000
+      && value.likedByClientIds.every((clientId) => typeof clientId === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(clientId))
+    ))
 }

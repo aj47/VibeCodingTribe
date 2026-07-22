@@ -109,4 +109,28 @@ describe('AccountStore', () => {
     expect(delivered.agent).toEqual({ id: expect.any(String), name: 'Scout', handle: 'scout', avatarUrl: 'https://cdn.example/scout.png' })
     expect(profileResult.profile).toMatchObject({ displayName: 'Scout', handle: 'scout', avatarUrl: 'https://cdn.example/scout.png', ownerHandle: 'owner', actorType: 'agent' })
   })
+
+  it('publishes external work links and the early-builder badge on profiles', async () => {
+    const store = createStore()
+    const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-public-builder', displayName: 'Public Builder', handle: 'public-builder',
+    } }))
+    const { account } = await identityResponse.json() as { account: { id: string } }
+    const updated = await store.fetch(request('/profile', {
+      accountId: account.id,
+      displayName: 'Public Builder',
+      headline: 'Shipping useful tools',
+      bio: 'Building a calmer way to review releases.',
+      githubUrl: 'https://github.com/public-builder',
+      linkedinUrl: '',
+      websiteUrl: 'https://builder.example',
+    }, 'PATCH'))
+    const result = await updated.json() as { profile: { bio?: string; websiteUrl?: string; badges?: Array<{ id: string }> } }
+
+    expect(result.profile).toMatchObject({
+      bio: 'Building a calmer way to review releases.',
+      websiteUrl: 'https://builder.example/',
+      badges: [{ id: 'early_builder' }],
+    })
+  })
 })

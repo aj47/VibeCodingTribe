@@ -4,6 +4,7 @@ import {
   normalizeHandle,
   parseRealtimeServerEvent,
   type RealtimeClientEvent,
+  type RealtimeSendEvent,
   type RealtimeProfile,
   type RealtimeServerEvent,
 } from '../realtime/protocol'
@@ -92,7 +93,8 @@ export class RealtimeRoomClient {
   private reconnectTimer: number | undefined
   private reconnectAttempt = 0
   private stopped = true
-  private outbox: RealtimeClientEvent['message'][] = this.loadOutbox()
+  private outbox: RealtimeSendEvent['message'][] = this.loadOutbox()
+  private pendingLikes = new Map<string, boolean>()
 
   constructor(
     private readonly profile: RealtimeProfile,
@@ -114,10 +116,16 @@ export class RealtimeRoomClient {
     this.socket = null
   }
 
-  send(message: RealtimeClientEvent['message']) {
+  send(message: RealtimeSendEvent['message']) {
     if (!this.canSend) return
     if (!this.outbox.some((item) => item.id === message.id)) this.outbox.push(message)
     this.persistOutbox()
+    this.flushOutbox()
+  }
+
+  setLike(messageId: string, liked: boolean) {
+    if (!this.canSend) return
+    this.pendingLikes.set(messageId, liked)
     this.flushOutbox()
   }
 
@@ -144,6 +152,10 @@ export class RealtimeRoomClient {
         if (!parsed) return
         if (parsed.type === 'message') {
           this.outbox = this.outbox.filter((item) => item.id !== parsed.message.id)
+          const pendingLike = this.pendingLikes.get(parsed.message.id)
+          if (pendingLike === parsed.message.likedByClientIds?.includes(this.profile.clientId)) {
+            this.pendingLikes.delete(parsed.message.id)
+          }
           this.persistOutbox()
         }
         this.handlers.onEvent(parsed)
@@ -168,13 +180,16 @@ export class RealtimeRoomClient {
     for (const message of this.outbox) {
       this.socket.send(JSON.stringify({ type: 'send', message } satisfies RealtimeClientEvent))
     }
+    for (const [messageId, liked] of this.pendingLikes) {
+      this.socket.send(JSON.stringify({ type: 'set_like', messageId, liked } satisfies RealtimeClientEvent))
+    }
   }
 
   private loadOutbox() {
     try {
       const saved = storage()?.getItem(OUTBOX_KEY)
       const parsed = saved ? JSON.parse(saved) : []
-      return Array.isArray(parsed) ? parsed.slice(-50) as RealtimeClientEvent['message'][] : []
+      return Array.isArray(parsed) ? parsed.slice(-50) as RealtimeSendEvent['message'][] : []
     } catch {
       return []
     }

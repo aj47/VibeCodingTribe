@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowUpRight, Github, Linkedin, Save, ShieldCheck, UserRound } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, BadgeCheck, Github, Globe2, Linkedin, LockKeyhole, MessageCircle, Rocket, Save, ShieldCheck, Sparkles, UserRound } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import type { AuthProvider, AuthSession, PublicAgentProfile, PublicHumanProfile, PublicProfile } from '../auth/types'
 import { beginLinkOAuth, loadOwnProfile, loadPublicProfile, updateOwnProfile } from '../services/auth'
@@ -10,10 +10,19 @@ interface ProfilePageProps {
   onSignIn: () => void
 }
 
+const BADGES = [
+  { id: 'first_post', name: 'First Post', description: 'Shared the first build update.', icon: Rocket },
+  { id: 'first_feedback_given', name: 'First Feedback Given', description: 'Helped another builder move forward.', icon: MessageCircle },
+  { id: 'first_feedback_received', name: 'First Feedback Received', description: 'Invited the tribe into the work.', icon: Sparkles },
+  { id: 'shipped_feedback', name: 'Shipped Feedback', description: 'A suggestion made it into a build.', icon: BadgeCheck },
+  { id: 'early_builder', name: 'Early Builder', description: 'Built with the tribe from the beginning.', icon: Rocket },
+  { id: 'community_helper', name: 'Community Helper', description: 'Gave feedback builders marked useful.', icon: ShieldCheck },
+] as const
+
 export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePageProps) {
   const ownProfile = !profileId || profileId === session?.user.id
   const [profile, setProfile] = useState<PublicProfile | null>(null)
-  const [draft, setDraft] = useState({ displayName: '', headline: '', githubUrl: '', linkedinUrl: '' })
+  const [draft, setDraft] = useState({ displayName: '', headline: '', bio: '', githubUrl: '', linkedinUrl: '', websiteUrl: '' })
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
 
@@ -25,7 +34,7 @@ export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePag
       if (!active) return
       setProfile(value)
       if ('actorType' in value) return
-      setDraft({ displayName: value.displayName, headline: value.headline ?? '', githubUrl: value.githubUrl ?? '', linkedinUrl: value.linkedinUrl ?? '' })
+      setDraft({ displayName: value.displayName, headline: value.headline ?? '', bio: value.bio ?? '', githubUrl: value.githubUrl ?? '', linkedinUrl: value.linkedinUrl ?? '', websiteUrl: value.websiteUrl ?? '' })
     }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : 'Profile could not be loaded') })
     return () => { active = false }
   }, [ownProfile, profileId, session])
@@ -65,17 +74,31 @@ export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePag
       {agentProfile ? <div className="public-profile-links public-agent-profile">
         <p>This agent has its own public identity. Every action remains accountable to <strong>{agentProfile.owner.displayName}</strong> · @{agentProfile.owner.handle}.</p>
         <small>Agent avatars and names are supplied by the connected agent during enrollment.</small>
-      </div> : humanProfile && ownProfile ? <form onSubmit={submit}>
+      </div> : humanProfile && ownProfile ? <><form onSubmit={submit}>
         <div className="profile-field"><label htmlFor="profile-name">Display name</label><input id="profile-name" required maxLength={40} value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} /></div>
         <div className="profile-field"><label htmlFor="profile-headline">Headline</label><input id="profile-headline" maxLength={120} placeholder="What are you building?" value={draft.headline} onChange={(event) => setDraft({ ...draft, headline: event.target.value })} /></div>
+        <div className="profile-field profile-field--bio"><label htmlFor="profile-bio">About your work</label><textarea id="profile-bio" maxLength={320} placeholder="What do you build, explore, or want help with?" value={draft.bio} onChange={(event) => setDraft({ ...draft, bio: event.target.value })} /></div>
         <div className="profile-link-field"><Github size={18} /><label htmlFor="profile-github"><span>GitHub profile</span><small>{humanProfile.linkedProviders.includes('github') ? 'Verified sign-in attached' : 'Public profile link'}</small></label><input id="profile-github" type="url" placeholder="https://github.com/username" value={draft.githubUrl} onChange={(event) => setDraft({ ...draft, githubUrl: event.target.value })} />{!humanProfile.linkedProviders.includes('github') && <button type="button" onClick={() => void link('github')}>Verify</button>}</div>
         <div className="profile-link-field"><Linkedin size={18} /><label htmlFor="profile-linkedin"><span>LinkedIn profile</span><small>{humanProfile.linkedProviders.includes('linkedin') ? 'Verified sign-in attached' : 'Public profile link'}</small></label><input id="profile-linkedin" type="url" placeholder="https://www.linkedin.com/in/username" value={draft.linkedinUrl} onChange={(event) => setDraft({ ...draft, linkedinUrl: event.target.value })} />{!humanProfile.linkedProviders.includes('linkedin') && <button type="button" onClick={() => void link('linkedin')}>Verify</button>}</div>
+        <div className="profile-link-field"><Globe2 size={18} /><label htmlFor="profile-website"><span>Website or portfolio</span><small>Your public home on the web</small></label><input id="profile-website" type="url" placeholder="https://your-site.com" value={draft.websiteUrl} onChange={(event) => setDraft({ ...draft, websiteUrl: event.target.value })} /></div>
         <footer><span>{saved ? 'Profile saved.' : 'These links are visible when someone opens your profile.'}</span><button type="submit"><Save size={14} /> Save profile</button></footer>
-      </form> : humanProfile ? <div className="public-profile-links">
-        <p>{humanProfile.headline || 'Builder on VibeCodingTribe'}</p>
-        <div>{humanProfile.githubUrl && <a href={humanProfile.githubUrl} target="_blank" rel="noreferrer"><Github size={17} /> GitHub <ArrowUpRight size={13} /></a>}{humanProfile.linkedinUrl && <a href={humanProfile.linkedinUrl} target="_blank" rel="noreferrer"><Linkedin size={17} /> LinkedIn <ArrowUpRight size={13} /></a>}</div>
+      </form><BadgeCollection profile={humanProfile} /></> : humanProfile ? <><div className="public-profile-links">
+        <p>{humanProfile.bio || humanProfile.headline || 'Builder on VibeCodingTribe'}</p>
+        <div>{humanProfile.githubUrl && <a href={humanProfile.githubUrl} target="_blank" rel="noreferrer"><Github size={17} /> GitHub <ArrowUpRight size={13} /></a>}{humanProfile.linkedinUrl && <a href={humanProfile.linkedinUrl} target="_blank" rel="noreferrer"><Linkedin size={17} /> LinkedIn <ArrowUpRight size={13} /></a>}{humanProfile.websiteUrl && <a href={humanProfile.websiteUrl} target="_blank" rel="noreferrer"><Globe2 size={17} /> Website <ArrowUpRight size={13} /></a>}</div>
         {!humanProfile.githubUrl && !humanProfile.linkedinUrl && <small>No public profiles attached yet.</small>}
-      </div> : null}
+      </div><BadgeCollection profile={humanProfile} /></> : null}
     </section>}
   </main>
+}
+
+function BadgeCollection({ profile }: { profile: PublicHumanProfile }) {
+  const awarded = new Set(profile.badges?.map((badge) => badge.id) ?? [])
+  return <section className="profile-badges" aria-labelledby="profile-badges-title">
+    <header><div><span>PROGRESS, NOT POINTS</span><h2 id="profile-badges-title">Builder badges</h2></div><strong>{awarded.size} / {BADGES.length} unlocked</strong></header>
+    <div>{BADGES.map((badge) => {
+      const Icon = badge.icon
+      const unlocked = awarded.has(badge.id)
+      return <article className={unlocked ? 'is-unlocked' : ''} key={badge.id}><span>{unlocked ? <Icon size={19} /> : <LockKeyhole size={16} />}</span><div><strong>{badge.name}</strong><p>{badge.description}</p></div>{unlocked && <BadgeCheck size={15} />}</article>
+    })}</div>
+  </section>
 }

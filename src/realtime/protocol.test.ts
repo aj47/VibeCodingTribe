@@ -26,6 +26,59 @@ describe('realtime protocol', () => {
     })).toBeNull()
   })
 
+  it('accepts idempotent like state changes and rejects malformed targets', () => {
+    expect(parseRealtimeClientEvent({ type: 'set_like', messageId: 'rt_message_12345678', liked: true })).toEqual({
+      type: 'set_like',
+      messageId: 'rt_message_12345678',
+      liked: true,
+    })
+    expect(parseRealtimeClientEvent({ type: 'set_like', messageId: 'short', liked: true })).toBeNull()
+    expect(parseRealtimeClientEvent({ type: 'set_like', messageId: 'rt_message_12345678', liked: 'yes' })).toBeNull()
+  })
+
+  it('carries structured feed context on the same realtime message', () => {
+    expect(parseRealtimeClientEvent({
+      type: 'send',
+      message: {
+        id: 'rt_client_12345678_post',
+        text: 'The onboarding is ready for another pair of eyes.',
+        intent: 'needs_feedback',
+        buildName: 'Launchpad',
+        buildUrl: 'https://launchpad.example/demo',
+      },
+    })).toEqual({
+      type: 'send',
+      message: {
+        id: 'rt_client_12345678_post',
+        text: 'The onboarding is ready for another pair of eyes.',
+        intent: 'needs_feedback',
+        buildName: 'Launchpad',
+        buildUrl: 'https://launchpad.example/demo',
+      },
+    })
+  })
+
+  it('preserves chat and showcase feed types', () => {
+    for (const intent of ['chat', 'showcase'] as const) {
+      const event = parseRealtimeClientEvent({
+        type: 'send',
+        message: { id: `rt_client_12345678_${intent}`, text: `A ${intent} post`, intent },
+      })
+      expect(event?.type === 'send' ? event.message.intent : undefined).toBe(intent)
+    }
+  })
+
+  it('accepts an image-only realtime post and rejects an invalid image URL', () => {
+    expect(parseRealtimeClientEvent({
+      type: 'send',
+      message: { id: 'rt_client_12345678_image', text: '', imageUrl: 'https://media.example/pasted.png' },
+    })).toEqual({ type: 'send', message: { id: 'rt_client_12345678_image', text: '', imageUrl: 'https://media.example/pasted.png' } })
+    expect(parseRealtimeClientEvent({
+      type: 'send',
+      message: { id: 'rt_client_12345678_badimage', text: '', imageUrl: 'javascript:alert(1)' },
+    })).toBeNull()
+  })
+
   it('accepts a complete server snapshot', () => {
     const message = {
       id: 'rt_client_12345678_3',
@@ -36,6 +89,7 @@ describe('realtime protocol', () => {
       avatarUrl: 'https://avatars.example/builder.png',
       text: 'live now',
       sentAt: '2026-07-18T20:00:00.000Z',
+      likedByClientIds: ['client_12345678'],
     }
     expect(parseRealtimeServerEvent({
       type: 'snapshot',

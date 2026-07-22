@@ -52,4 +52,28 @@ describe('public room access', () => {
     }), env as never)
     expect(response.status).toBe(401)
   })
+
+  it('stores a pasted image outside realtime message history in local preview', async () => {
+    const put = vi.fn(async (...args: [string, unknown, unknown?]) => { void args })
+    const env = {
+      ALLOWED_ORIGINS: 'http://localhost:4173',
+      AUTH_APP_ORIGIN: 'http://localhost:4173',
+      LOCAL_PREVIEW: 'true',
+      MEDIA: { put },
+      LIVE_ROOM: {},
+      EXCHANGE_STATE: {},
+      ACCOUNTS: {},
+    }
+    const response = await worker.fetch(new Request('http://worker.example/api/uploads/images', {
+      method: 'POST',
+      headers: { Origin: 'http://localhost:4173', 'Content-Type': 'image/png' },
+      body: new Uint8Array([137, 80, 78, 71]),
+    }), env as never)
+    const result = await response.json() as { url: string }
+
+    expect(response.status).toBe(201)
+    expect(result.url).toMatch(/^http:\/\/worker\.example\/media\/[a-f0-9-]+\.png$/)
+    expect(put).toHaveBeenCalledOnce()
+    expect(put.mock.calls[0]?.[0]).toMatch(/\.png$/)
+  })
 })

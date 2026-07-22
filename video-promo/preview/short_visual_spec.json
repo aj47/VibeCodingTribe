@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "style": "clean-max-focus",
+  "canvas": {"width": 1080, "height": 1920},
+  "allow_editorial_text": true,
+  "allow_captions": "needed_for_comprehension",
+  "source_priority": ["product_art", "brand_lockup", "cta"],
+  "required_artifacts": [
+    "preview/layout_contact_sheet.jpg",
+    "preview/vertical_preview_10s.mp4",
+    "renders/vibe-coding-tribe-vertical-promo-v1.mp4"
+  ],
+  "qc": {
+    "no_blind_center_crop": true,
+    "proof_object_visible": true,
+    "screen_readability_required": true,
+    "no_placeholder_bars": true,
+    "ffprobe_verified": true
+  },
+  "notes": "Original graphic promo variant. Editorial text is intentionally enabled because the user requested a promotional short; product art remains the visual proof and all copy is phone-safe. No facecam or footage source was available in the project."
+}

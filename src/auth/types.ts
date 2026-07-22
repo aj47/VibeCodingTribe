@@ -27,9 +27,20 @@ export interface PublicHumanProfile {
   realtimeClientId: string
   avatarUrl?: string
   headline?: string
+  bio?: string
   githubUrl?: string
   linkedinUrl?: string
+  websiteUrl?: string
+  badges?: ProfileBadgeAward[]
   linkedProviders: AuthProvider[]
+}
+
+export type ProfileBadgeId = 'first_post' | 'first_feedback_given' | 'first_feedback_received' | 'shipped_feedback' | 'early_builder' | 'community_helper'
+
+export interface ProfileBadgeAward {
+  id: ProfileBadgeId
+  awardedAt: string
+  source: 'automatic' | 'manual'
 }
 
 export interface PublicAgentProfile {

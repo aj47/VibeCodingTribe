@@ -3,8 +3,7 @@ import type { AuthProvider, AuthSession } from './auth/types'
 import { AgentInvitePage } from './components/AgentInvitePage'
 import { AgentAuthorizationPage } from './components/AgentAuthorizationPage'
 import { AuthScreen } from './components/AuthScreen'
-import { ExchangeApp } from './components/ExchangeApp'
-import { LiveRoom, type MessageDeliveryState } from './components/LiveRoom'
+import { CommunityFeed } from './components/CommunityFeed'
 import { ProfilePage } from './components/ProfilePage'
 import {
   MAX_REALTIME_MESSAGE_LENGTH,
@@ -26,21 +25,24 @@ import {
   saveRealtimeProfile,
 } from './services/realtime'
 import { mergeRealtimeProfiles } from './realtime/participants'
+import type { CommunityPostInput } from './community/types'
+import { uploadCommunityImage } from './services/media'
 
-type Surface = 'home' | 'exchange' | 'room' | 'invite-agent' | 'profile' | 'authorize-agent'
+type Surface = 'home' | 'community' | 'invite-agent' | 'profile' | 'authorize-agent'
 type ConnectionStatus = 'connected' | 'syncing' | 'offline'
 
-const DRAFT_KEY = 'vct-general-draft-v1'
 const LEGACY_STORAGE_KEYS = ['vct-workspace-v3', 'vct-realtime-profile-v1', 'vct-realtime-outbox-v1']
 
 function loadSurface(): Surface {
   const path = window.location.pathname.replace(/\/+$/, '')
+  if (path === '/exchange') {
+    window.history.replaceState({}, '', `/missions${window.location.search}${window.location.hash}`)
+  }
+  if (path === '/welcome') return 'home'
   if (path === '/invite-agent') return 'invite-agent'
-  if (path === '/settings/profile' || path.startsWith('/p/')) return 'profile'
+  if (path === '/settings/profile' || path === '/badges' || path.startsWith('/p/')) return 'profile'
   if (path.startsWith('/agents/authorize/')) return 'authorize-agent'
-  if (path === '/exchange') return 'exchange'
-  const isRoom = path === '/r/general'
-  return isRoom ? 'room' : 'home'
+  return 'community'
 }
 
 function mergeMessages(current: RealtimeMessageRecord[], incoming: RealtimeMessageRecord[]) {
@@ -56,18 +58,16 @@ export function App() {
   const [sessionToken, setSessionToken] = useState(consumeAuthCallback)
   const [authChecking, setAuthChecking] = useState(() => Boolean(getSessionToken()))
   const [authError] = useState(authErrorFromLocation)
+  const [localPreview, setLocalPreview] = useState(() => import.meta.env.DEV && window.sessionStorage.getItem('vct-community-preview-v1') === 'true')
   const [profile, setProfile] = useState<RealtimeProfile>(loadRealtimeProfile)
   const [messages, setMessages] = useState<RealtimeMessageRecord[]>([])
   const [knownProfiles, setKnownProfiles] = useState<RealtimeProfile[]>([])
   const [onlineProfiles, setOnlineProfiles] = useState<RealtimeProfile[]>([])
   const [onlineCount, setOnlineCount] = useState(0)
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('syncing')
-  const [deliveryStates, setDeliveryStates] = useState<Record<string, MessageDeliveryState>>({})
-  const [draft, setDraft] = useState(() => window.localStorage.getItem(DRAFT_KEY) ?? '')
-  const [notice, setNotice] = useState<string | null>(null)
   const realtimeClientRef = useRef<RealtimeRoomClient | null>(null)
-  const profileBackRef = useRef<Surface>('room')
-  const canPost = Boolean(authSession)
+  const profileBackRef = useRef<Surface>('community')
+  const canPost = Boolean(authSession) || localPreview
 
   useEffect(() => {
     for (const key of LEGACY_STORAGE_KEYS) window.localStorage.removeItem(key)
@@ -80,23 +80,14 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    window.localStorage.setItem(DRAFT_KEY, draft)
-  }, [draft])
-
-  useEffect(() => {
     if (surface === 'home') {
-      if (window.location.pathname !== '/') window.history.replaceState({}, '', '/')
-      document.title = 'VibeCodingTribe · Testing exchange for builders'
+      if (window.location.pathname !== '/welcome') window.history.replaceState({}, '', '/welcome')
+      document.title = 'VibeCodingTribe · Build in public, together'
       return
     }
-    if (surface === 'exchange') {
-      window.history.replaceState({}, '', '/exchange')
-      document.title = 'Testing Exchange · VibeCodingTribe'
-      return
-    }
-    if (surface === 'room') {
-      window.history.replaceState({}, '', '/r/general')
-      document.title = '#general · VibeCodingTribe'
+    if (surface === 'community') {
+      if (window.location.pathname === '/r/general') window.history.replaceState({}, '', '/')
+      document.title = window.location.pathname === '/missions' ? 'Needs Feedback · VibeCodingTribe' : 'Community Feed · VibeCodingTribe'
       return
     }
     if (surface === 'invite-agent') {
@@ -143,10 +134,6 @@ export function App() {
       setKnownProfiles([authenticatedProfile])
       setAuthSession(session)
       setAuthChecking(false)
-      if (window.location.pathname.replace(/\/+$/, '') === '/') {
-        window.history.replaceState({}, '', '/exchange')
-        setSurface('exchange')
-      }
     })
     return () => { active = false }
   }, [sessionToken])
@@ -171,7 +158,7 @@ export function App() {
   }, [rememberProfiles])
 
   useEffect(() => {
-    if (surface !== 'room' || authChecking) return
+    if (surface !== 'community' || authChecking) return
     const activeSessionToken = authSession ? (getSessionToken() ?? sessionToken ?? undefined) : undefined
     const client = new RealtimeRoomClient(profile, {
       onStatus: setConnectionStatus,
@@ -182,20 +169,11 @@ export function App() {
           rememberProfiles(event.participants)
           setOnlineProfiles(event.participants)
           setOnlineCount(event.onlineCount)
-          const confirmedIds = new Set(event.messages.map((message) => message.id))
-          setDeliveryStates((current) => Object.fromEntries(
-            Object.entries(current).filter(([id]) => !confirmedIds.has(id)),
-          ))
           return
         }
         if (event.type === 'message') {
           setMessages((current) => mergeMessages(current, [event.message]))
           rememberMessageAuthors([event.message])
-          setDeliveryStates((current) => {
-            const next = { ...current }
-            delete next[event.message.id]
-            return next
-          })
           return
         }
         if (event.type === 'presence') {
@@ -204,10 +182,7 @@ export function App() {
           setOnlineCount(event.onlineCount)
           return
         }
-        setNotice(event.message)
-        if (event.clientMessageId) {
-          setDeliveryStates((current) => ({ ...current, [event.clientMessageId!]: 'failed' }))
-        }
+        // The feed keeps optimistic posts visible; reconnecting retries them from the durable outbox.
       },
     }, undefined, activeSessionToken, canPost)
     realtimeClientRef.current = client
@@ -225,10 +200,11 @@ export function App() {
       .sort((a, b) => Number(b.online) - Number(a.online) || a.displayName.localeCompare(b.displayName))
   }, [knownProfiles, onlineProfiles])
 
-  const sendMessage = useCallback((value: string) => {
+  const sendMessage = useCallback((value: string | CommunityPostInput) => {
     if (!canPost) return
-    const text = value.trim().slice(0, MAX_REALTIME_MESSAGE_LENGTH)
-    if (!text) return
+    const input = typeof value === 'string' ? { text: value } : value
+    const text = input.text.trim().slice(0, MAX_REALTIME_MESSAGE_LENGTH)
+    if (!text && !input.imageUrl) return
     const id = createRealtimeMessageId(profile.clientId)
     const optimisticMessage: RealtimeMessageRecord = {
       id,
@@ -242,19 +218,37 @@ export function App() {
       ...(profile.ownerHandle ? { ownerHandle: profile.ownerHandle } : {}),
       text,
       sentAt: new Date().toISOString(),
+      ...(input.intent ? { intent: input.intent } : {}),
+      ...(input.parentId ? { parentId: input.parentId } : {}),
+      ...(input.commentKind ? { commentKind: input.commentKind } : {}),
+      ...(input.buildName ? { buildName: input.buildName.trim().slice(0, 80) } : {}),
+      ...(input.buildUrl ? { buildUrl: input.buildUrl } : {}),
+      ...(input.imageUrl ? { imageUrl: input.imageUrl } : {}),
     }
     setMessages((current) => mergeMessages(current, [optimisticMessage]))
-    setDeliveryStates((current) => ({ ...current, [id]: 'sending' }))
-    setDraft('')
-    realtimeClientRef.current?.send({ id, text })
+    realtimeClientRef.current?.send({
+      id,
+      text,
+      ...(input.intent ? { intent: input.intent } : {}),
+      ...(input.parentId ? { parentId: input.parentId } : {}),
+      ...(input.commentKind ? { commentKind: input.commentKind } : {}),
+      ...(input.buildName ? { buildName: input.buildName.trim().slice(0, 80) } : {}),
+      ...(input.buildUrl ? { buildUrl: input.buildUrl } : {}),
+      ...(input.imageUrl ? { imageUrl: input.imageUrl } : {}),
+    })
   }, [canPost, profile])
 
-  const retryMessage = useCallback((messageId: string) => {
-    const message = messages.find((item) => item.id === messageId)
-    if (!message) return
-    setDeliveryStates((current) => ({ ...current, [messageId]: 'sending' }))
-    realtimeClientRef.current?.send({ id: message.id, text: message.text })
-  }, [messages])
+  const toggleLike = useCallback((messageId: string, liked: boolean) => {
+    if (!canPost) return
+    setMessages((current) => current.map((message) => {
+      if (message.id !== messageId) return message
+      const likedBy = new Set(message.likedByClientIds ?? [])
+      if (liked) likedBy.add(profile.clientId)
+      else likedBy.delete(profile.clientId)
+      return { ...message, likedByClientIds: [...likedBy] }
+    }))
+    realtimeClientRef.current?.setLike(messageId, liked)
+  }, [canPost, profile.clientId])
 
   if (surface === 'home' && authChecking) {
     return (
@@ -267,17 +261,21 @@ export function App() {
 
   const openHome = () => {
     window.history.pushState({}, '', '/')
-    setSurface('home')
+    setSurface('community')
   }
 
   const openRoom = () => {
-    window.history.pushState({}, '', '/r/general')
-    setSurface('room')
+    window.history.pushState({}, '', '/')
+    setSurface('community')
+  }
+
+  const openMissions = () => {
+    window.history.pushState({}, '', '/missions')
+    setSurface('community')
   }
 
   const openExchange = () => {
-    window.history.pushState({}, '', '/exchange')
-    setSurface('exchange')
+    openMissions()
   }
 
   const openAgentInvite = () => {
@@ -292,16 +290,15 @@ export function App() {
   }
 
   const openPublicProfile = (profileId: string) => {
-    profileBackRef.current = 'room'
+    profileBackRef.current = 'community'
     window.history.pushState({}, '', `/p/${encodeURIComponent(profileId)}`)
     setSurface('profile')
   }
 
   const backFromProfile = () => {
     if (profileBackRef.current === 'invite-agent') return openAgentInvite()
-    if (profileBackRef.current === 'exchange') return openExchange()
     if (profileBackRef.current === 'home') return openHome()
-    return openRoom()
+    return openHome()
   }
 
   if (surface === 'home') {
@@ -343,41 +340,29 @@ export function App() {
     }} />
   }
 
-  if (surface === 'exchange') {
-    return (
-      <ExchangeApp
-        signedIn={Boolean(authSession)}
-        authenticatedUserId={authSession?.user.id}
-        onOpenRoom={openRoom}
-        onSignIn={() => {
-          setAuthPendingProvider('linkedin')
-          beginOAuth('linkedin', '/exchange')
-        }}
-      />
-    )
-  }
-
   return (
-    <LiveRoom
+    <CommunityFeed
       profile={profile}
       provider={authSession?.user.provider}
+      authError={authError}
       canPost={canPost}
       authChecking={authChecking}
-      pendingProvider={authPendingProvider}
       messages={messages}
       participants={participants}
       onlineCount={onlineCount}
       connectionStatus={connectionStatus}
-      deliveryStates={deliveryStates}
-      draft={draft}
-      notice={notice}
-      onDraftChange={setDraft}
       onSend={sendMessage}
-      onRetry={retryMessage}
-      onDismissNotice={() => setNotice(null)}
+      onToggleLike={toggleLike}
+      onUploadImage={uploadCommunityImage}
+      missionsOnly={window.location.pathname === '/missions'}
       onSignIn={(provider) => {
         setAuthPendingProvider(provider)
-        beginOAuth(provider)
+        beginOAuth(provider, window.location.pathname)
+      }}
+      localPreviewAvailable={import.meta.env.DEV && !localPreview}
+      onStartLocalPreview={() => {
+        window.sessionStorage.setItem('vct-community-preview-v1', 'true')
+        setLocalPreview(true)
       }}
       onSignOut={() => {
         clearAuthSession()
@@ -385,9 +370,12 @@ export function App() {
         setAuthSession(null)
         setOnlineProfiles([])
         setKnownProfiles([])
+        window.sessionStorage.removeItem('vct-community-preview-v1')
+        setLocalPreview(false)
       }}
       onInviteAgent={openAgentInvite}
-      onOpenExchange={openExchange}
+      onOpenFeed={openHome}
+      onOpenMissions={openMissions}
       onOpenProfile={openPublicProfile}
       onOpenOwnProfile={openOwnProfile}
     />

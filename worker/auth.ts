@@ -190,6 +190,7 @@ async function startOAuth(request: Request, env: AuthEnv, provider: AuthProvider
     authorizationUrl.searchParams.set('code_challenge_method', 'S256')
   } else {
     authorizationUrl.searchParams.set('scope', 'openid profile')
+    authorizationUrl.searchParams.set('enable_extended_login', 'true')
   }
   if (linkAccountId) {
     const signedAttempt = await signValue({ ...attempt, state: 'signed-link' }, env.SESSION_SECRET)
@@ -306,6 +307,7 @@ async function finishOAuth(request: Request, env: AuthEnv, provider: AuthProvide
     })
   }
 
+  let stage = 'provider identity'
   try {
     const identity = provider === 'github'
       ? await githubIdentity(code, attempt, request, env)
@@ -313,6 +315,7 @@ async function finishOAuth(request: Request, env: AuthEnv, provider: AuthProvide
     let accountId = `${provider}:${identity.subject}`
     let account: HumanAccount | undefined
     if (env.ACCOUNTS) {
+      stage = 'account resolution'
       const accountResponse = await accountRequest(env, '/identity/resolve', {
         identity: { provider, ...identity } satisfies AccountIdentity,
         ...(attempt.linkAccountId ? { accountId: attempt.linkAccountId } : {}),
@@ -325,6 +328,7 @@ async function finishOAuth(request: Request, env: AuthEnv, provider: AuthProvide
       account = resolved.account
       accountId = account.id
     }
+    stage = 'session issuance'
     const now = Math.floor(Date.now() / 1000)
     const claims: SessionClaims = {
       version: env.ACCOUNTS ? 2 : 1,
@@ -349,7 +353,12 @@ async function finishOAuth(request: Request, env: AuthEnv, provider: AuthProvide
         'Cache-Control': 'no-store',
       },
     })
-  } catch {
+  } catch (error) {
+    console.error('OAuth callback failed', {
+      provider,
+      stage,
+      message: error instanceof Error ? error.message : 'Unknown error',
+    })
     return new Response(null, {
       status: 302,
       headers: {

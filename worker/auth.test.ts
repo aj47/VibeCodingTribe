@@ -37,6 +37,7 @@ describe('OAuth routes', () => {
     const location = new URL(response!.headers.get('Location')!)
     expect(location.origin).toBe('https://www.linkedin.com')
     expect(location.searchParams.get('scope')).toBe('openid profile')
+    expect(location.searchParams.get('enable_extended_login')).toBe('true')
     expect(location.searchParams.get('state')).toBeTruthy()
   })
 
