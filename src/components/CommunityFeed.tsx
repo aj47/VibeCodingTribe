@@ -12,6 +12,7 @@ import {
   Link2,
   Linkedin,
   LoaderCircle,
+  Menu,
   MessageCircle,
   Radio,
   Rocket,
@@ -24,10 +25,14 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from 'react'
 import type { AuthProvider } from '../auth/types'
+import { type CommunityChannelId } from '../community/channels'
+import { findActiveThreads, type ChannelActivityMap } from '../community/channel-navigation'
 import { COMMUNITY_INTENTS, type CommunityPostInput, type CommunityPostIntent } from '../community/types'
 import type { RealtimeMessageRecord, RealtimeProfile } from '../realtime/protocol'
 import { validateCommunityImage } from '../services/media'
+import { type LocalReadState } from '../services/read-state'
 import { Brand } from './Brand'
+import { ChannelSidebar } from './ChannelSidebar'
 import { ThemeToggle } from './ThemeToggle'
 
 interface CommunityFeedProps {
@@ -41,6 +46,10 @@ interface CommunityFeedProps {
   onlineCount: number
   connectionStatus: 'connected' | 'syncing' | 'offline'
   missionsOnly: boolean
+  channelId: CommunityChannelId
+  channelActivity: ChannelActivityMap
+  readState: LocalReadState
+  threadId?: string
   onSend: (input: CommunityPostInput) => void
   onToggleLike: (messageId: string, liked: boolean) => void
   onUploadImage: (file: File) => Promise<string>
@@ -50,6 +59,9 @@ interface CommunityFeedProps {
   onSignOut: () => void
   onOpenFeed: () => void
   onOpenMissions: () => void
+  onOpenChannel: (channelId: CommunityChannelId) => void
+  onOpenThread: (channelId: CommunityChannelId, parentId: string) => void
+  onReadThread: (channelId: CommunityChannelId, parentId: string, activityAt: string) => void
   onOpenProfile: (profileId: string) => void
   onOpenOwnProfile: () => void
   onInviteAgent: () => void
@@ -111,6 +123,10 @@ export function CommunityFeed({
   onlineCount,
   connectionStatus,
   missionsOnly,
+  channelId,
+  channelActivity,
+  readState,
+  threadId,
   onSend,
   onToggleLike,
   onUploadImage,
@@ -120,6 +136,9 @@ export function CommunityFeed({
   onSignOut,
   onOpenFeed,
   onOpenMissions,
+  onOpenChannel,
+  onOpenThread,
+  onReadThread,
   onOpenProfile,
   onOpenOwnProfile,
   onInviteAgent,
@@ -139,11 +158,17 @@ export function CommunityFeed({
   const [replyImageError, setReplyImageError] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [publishingReply, setPublishingReply] = useState(false)
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false)
   const replyRef = useRef<HTMLTextAreaElement>(null)
+  const channelPickerButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (missionsOnly) setIntent('needs_feedback')
   }, [missionsOnly])
+
+  useEffect(() => {
+    if (!channelPickerOpen) channelPickerButtonRef.current?.focus()
+  }, [channelPickerOpen])
 
   useEffect(() => () => {
     if (pastedImage) URL.revokeObjectURL(pastedImage.previewUrl)
@@ -164,10 +189,26 @@ export function CommunityFeed({
     }
     return grouped
   }, [messages])
+  useEffect(() => {
+    if (threadId && replies.has(threadId)) setReplyingTo(threadId)
+  }, [replies, threadId])
   const needsFeedback = useMemo(() => messages
     .filter((message) => !message.parentId && message.intent === 'needs_feedback')
     .sort((a, b) => b.sentAt.localeCompare(a.sentAt)).slice(0, 4), [messages])
   const composerMeta = COMMUNITY_INTENTS.find((item) => item.value === intent) ?? COMMUNITY_INTENTS[0]
+  const activeThreads = useMemo(() => findActiveThreads(messages, channelId), [channelId, messages])
+  useEffect(() => {
+    if (!threadId || !replies.has(threadId)) return
+    const latestReply = [...(replies.get(threadId) ?? [])].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]
+    if (latestReply) onReadThread(channelId, threadId, latestReply.sentAt)
+  }, [channelId, onReadThread, replies, threadId])
+
+  function openThread(channel: CommunityChannelId, parentId: string) {
+    const thread = channel === channelId ? activeThreads.find((item) => item.parentId === parentId) : undefined
+    if (thread) onReadThread(channel, parentId, thread.latestActivity)
+    onOpenThread(channel, parentId)
+    setChannelPickerOpen(false)
+  }
 
   function capturePastedImage(event: ClipboardEvent<HTMLTextAreaElement>, target: 'post' | 'reply') {
     const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith('image/'))
@@ -249,6 +290,7 @@ export function CommunityFeed({
   return <div className="community-shell">
     <header className="community-topbar">
       <div className="community-brand-button"><Brand /></div>
+      <button ref={channelPickerButtonRef} className="community-mobile-channels" type="button" aria-label="Open channels" aria-expanded={channelPickerOpen} onClick={() => setChannelPickerOpen(true)}><Menu size={18} /><span>#{channelId}</span></button>
       <nav aria-label="Community navigation">
         <button className={!missionsOnly ? 'is-active' : ''} type="button" onClick={onOpenFeed}><Home size={15} /> Feed</button>
         <button className={missionsOnly ? 'is-active' : ''} type="button" onClick={onOpenMissions}><Radio size={15} /> Needs feedback</button>
@@ -274,9 +316,18 @@ export function CommunityFeed({
     </header>
     {authError && <div className="community-auth-error" role="alert">{authError}</div>}
 
+    {channelPickerOpen && <div className="community-mobile-channel-picker" role="dialog" aria-modal="true" aria-label="Choose a channel">
+      <div className="community-mobile-channel-picker__backdrop" onClick={() => setChannelPickerOpen(false)} />
+      <section className="community-mobile-channel-picker__panel">
+        <header><div><span>WORKSHOP ROOMS</span><strong>Choose a channel</strong></div><button type="button" aria-label="Close channels" onClick={() => setChannelPickerOpen(false)}><X size={18} /></button></header>
+        <ChannelSidebar selectedChannelId={channelId} activity={channelActivity} messages={messages} readState={readState} onSelectChannel={(nextChannelId) => { onOpenChannel(nextChannelId); setChannelPickerOpen(false) }} onOpenThread={openThread} onReadThread={onReadThread} autoFocusSearch />
+      </section>
+    </div>}
+
     <main className="community-layout">
       <aside className="community-rail community-rail--left">
         <div className="community-rail__intro"><span>THE WORKSHOP IS OPEN</span><h2>Build in public.<br />Get unstuck together.</h2><p>Small updates count. Share the rough edge, not just the launch.</p></div>
+        <ChannelSidebar selectedChannelId={channelId} activity={channelActivity} messages={messages} readState={readState} onSelectChannel={onOpenChannel} onOpenThread={openThread} onReadThread={onReadThread} />
         <nav aria-label="Explore">
           <button type="button" onClick={onOpenFeed}><Sparkles size={15} /> Latest builds</button>
           <button type="button" onClick={onOpenMissions}><Radio size={15} /> Needs feedback</button>
@@ -336,7 +387,7 @@ export function CommunityFeed({
               {message.imageUrl && <figure className="community-post-image"><img src={message.imageUrl} alt={message.text || 'Image shared with this post'} loading="lazy" /></figure>}
               {message.buildName && <a className="community-build-attachment" href={message.buildUrl || '#'} target={message.buildUrl ? '_blank' : undefined} rel="noreferrer"><span><Rocket size={18} /></span><div><small>ATTACHED BUILD</small><strong>{message.buildName}</strong></div>{message.buildUrl && <ExternalLink size={14} />}</a>}
               <footer>
-                <button type="button" onClick={() => { setCommentKind(kind === 'feedback' ? 'feedback' : 'reply'); setReply(''); setReplyImage(null); setReplyImageError(null); setReplyingTo(message.id); requestAnimationFrame(() => replyRef.current?.focus()) }}><MessageCircle size={14} /> {postReplies.length ? `${postReplies.length} response${postReplies.length === 1 ? '' : 's'}` : kind === 'feedback' ? 'Give feedback' : 'Reply'}</button>
+                <button type="button" onClick={() => { const latestReply = [...postReplies].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]; if (latestReply) onReadThread(channelId, message.id, latestReply.sentAt); onOpenThread(channelId, message.id); setCommentKind(kind === 'feedback' ? 'feedback' : 'reply'); setReply(''); setReplyImage(null); setReplyImageError(null); setReplyingTo(message.id); requestAnimationFrame(() => replyRef.current?.focus()) }}><MessageCircle size={14} /> {postReplies.length ? `${postReplies.length} response${postReplies.length === 1 ? '' : 's'}` : kind === 'feedback' ? 'Give feedback' : 'Reply'}</button>
                 <button className="community-like" type="button" disabled={!canPost} aria-pressed={message.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${message.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} post by ${message.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(message.id, !(message.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={14} fill="currentColor" /> {message.likedByClientIds?.length ? message.likedByClientIds.length : 'Like'}</button>
                 <button type="button" onClick={() => void sharePost(message)}><Share2 size={14} /> {kind === 'showcase' ? 'Share showcase' : kind === 'feedback' ? 'Share request' : 'Share'}</button>
               </footer>

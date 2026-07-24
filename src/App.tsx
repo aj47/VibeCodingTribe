@@ -26,7 +26,9 @@ import {
 } from './services/realtime'
 import { mergeRealtimeProfiles } from './realtime/participants'
 import type { CommunityPostInput } from './community/types'
-import { channelFromPath, channelPath, DEFAULT_CHANNEL_ID } from './community/channels'
+import { channelFromPath, channelPath, DEFAULT_CHANNEL_ID, type CommunityChannelId } from './community/channels'
+import type { ChannelActivityMap } from './community/channel-navigation'
+import { loadLocalChannelActivity, loadLocalReadState, markThreadRead as markLocalThreadRead, saveLocalChannelActivity, saveLocalReadState, type LocalReadState } from './services/read-state'
 import { uploadCommunityImage } from './services/media'
 
 type Surface = 'home' | 'community' | 'invite-agent' | 'profile' | 'authorize-agent'
@@ -61,6 +63,8 @@ export function App() {
   const [authError] = useState(authErrorFromLocation)
   const [localPreview, setLocalPreview] = useState(() => import.meta.env.DEV && window.sessionStorage.getItem('vct-community-preview-v1') === 'true')
   const [profile, setProfile] = useState<RealtimeProfile>(loadRealtimeProfile)
+  const [readState, setReadState] = useState<LocalReadState>(() => loadLocalReadState(profile.clientId))
+  const [channelActivity, setChannelActivity] = useState<ChannelActivityMap>(() => Object.fromEntries(Object.entries(loadLocalChannelActivity(profile.clientId)).map(([id, latestActivity]) => [id, { latestActivity }])) as ChannelActivityMap)
   const [messages, setMessages] = useState<RealtimeMessageRecord[]>([])
   const [knownProfiles, setKnownProfiles] = useState<RealtimeProfile[]>([])
   const [onlineProfiles, setOnlineProfiles] = useState<RealtimeProfile[]>([])
@@ -70,6 +74,42 @@ export function App() {
   const profileBackRef = useRef<Surface>('community')
   const canPost = Boolean(authSession) || localPreview
   const channelId = channelFromPath(window.location.pathname)
+  const threadId = new URLSearchParams(window.location.search).get('thread') ?? undefined
+
+  useEffect(() => {
+    setReadState(loadLocalReadState(profile.clientId))
+    const activity = loadLocalChannelActivity(profile.clientId)
+    setChannelActivity(Object.fromEntries(Object.entries(activity).map(([id, latestActivity]) => [id, { latestActivity }])) as ChannelActivityMap)
+  }, [profile.clientId])
+
+  const rememberChannelActivity = useCallback((records: RealtimeMessageRecord[], selectedChannelId: CommunityChannelId) => {
+    const latest = records.reduce<string | undefined>((current, record) => !current || record.sentAt > current ? record.sentAt : current, undefined)
+    if (!latest) return
+    setChannelActivity((current) => {
+      const previous = current[selectedChannelId]?.latestActivity
+      if (previous && previous >= latest) return current
+      const next = { ...current, [selectedChannelId]: { latestActivity: latest } }
+      saveLocalChannelActivity(profile.clientId, Object.fromEntries(Object.entries(next).map(([id, value]) => [id, value.latestActivity])) as Partial<Record<CommunityChannelId, string>>)
+      return next
+    })
+  }, [profile.clientId])
+
+  const markChannelRead = useCallback((targetChannelId: CommunityChannelId, activityAt?: string) => {
+    if (!activityAt) return
+    setReadState((current) => {
+      const next = { ...current, channels: { ...current.channels, [targetChannelId]: activityAt } }
+      saveLocalReadState(profile.clientId, next)
+      return next
+    })
+  }, [profile.clientId])
+
+  const onReadThread = useCallback((targetChannelId: CommunityChannelId, parentId: string, activityAt: string) => {
+    setReadState((current) => {
+      const next = markLocalThreadRead(current, targetChannelId, parentId, activityAt)
+      saveLocalReadState(profile.clientId, next)
+      return next
+    })
+  }, [profile.clientId])
 
   useEffect(() => {
     for (const key of LEGACY_STORAGE_KEYS) window.localStorage.removeItem(key)
@@ -170,6 +210,9 @@ export function App() {
       onEvent: (event) => {
         if (event.type === 'snapshot') {
           setMessages((current) => mergeMessages(current, event.messages))
+          rememberChannelActivity(event.messages, channelId)
+          const latest = event.messages.reduce<string | undefined>((current, record) => !current || record.sentAt > current ? record.sentAt : current, undefined)
+          markChannelRead(channelId, latest)
           rememberMessageAuthors(event.messages)
           rememberProfiles(event.participants)
           setOnlineProfiles(event.participants)
@@ -178,6 +221,7 @@ export function App() {
         }
         if (event.type === 'message') {
           setMessages((current) => mergeMessages(current, [event.message]))
+          rememberChannelActivity([event.message], channelId)
           rememberMessageAuthors([event.message])
           return
         }
@@ -196,7 +240,7 @@ export function App() {
       client.disconnect()
       if (realtimeClientRef.current === client) realtimeClientRef.current = null
     }
-  }, [authChecking, authSession, canPost, channelId, profile, rememberMessageAuthors, rememberProfiles, sessionToken, surface])
+    }, [authChecking, authSession, canPost, channelId, markChannelRead, profile, rememberChannelActivity, rememberMessageAuthors, rememberProfiles, sessionToken, surface])
 
   const participants = useMemo(() => {
     const onlineIds = new Set(onlineProfiles.map((item) => item.clientId))
@@ -282,6 +326,16 @@ export function App() {
     setSurface('community')
   }
 
+  const openChannel = (targetChannelId: CommunityChannelId) => {
+    window.history.pushState({}, '', channelPath(targetChannelId))
+    setSurface('community')
+  }
+
+  const openThread = (targetChannelId: CommunityChannelId, parentId: string) => {
+    window.history.pushState({}, '', `${channelPath(targetChannelId)}?thread=${encodeURIComponent(parentId)}`)
+    setSurface('community')
+  }
+
   const openExchange = () => {
     openMissions()
   }
@@ -363,6 +417,10 @@ export function App() {
       onToggleLike={toggleLike}
       onUploadImage={uploadCommunityImage}
       missionsOnly={channelId === 'feedback'}
+      channelId={channelId}
+      channelActivity={channelActivity}
+      readState={readState}
+      threadId={threadId}
       onSignIn={(provider) => {
         setAuthPendingProvider(provider)
         beginOAuth(provider, window.location.pathname)
@@ -384,6 +442,9 @@ export function App() {
       onInviteAgent={openAgentInvite}
       onOpenFeed={openHome}
       onOpenMissions={openMissions}
+      onOpenChannel={openChannel}
+      onOpenThread={openThread}
+      onReadThread={onReadThread}
       onOpenProfile={openPublicProfile}
       onOpenOwnProfile={openOwnProfile}
     />
