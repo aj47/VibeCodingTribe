@@ -131,7 +131,7 @@ export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | 
   }
 }
 
-function normalizeHttpUrl(value: unknown) {
+export function normalizeHttpUrl(value: unknown) {
   if (typeof value !== 'string' || !value.trim() || value.length > 2_048) return undefined
   try {
     const url = new URL(value)
