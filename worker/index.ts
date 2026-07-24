@@ -357,7 +357,7 @@ export async function migrateLegacyHistory(env: Env) {
 async function handleLegacyMigrationRequest(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url)
   if (url.pathname !== '/__ops/migrate-legacy') return null
-  if (request.method !== 'POST' || !env.MIGRATION_SECRET || request.headers.get('Authorization') !== `Bearer ${env.MIGRATION_SECRET}`) {
+  if (request.method !== 'POST' || !env.MIGRATION_SECRET || request.headers.get('Authorization') !== `Bearer ${env.MIGRATION_SECRET.trim()}`) {
     return json({ error: 'Not found' }, 404)
   }
   const result = await migrateLegacyHistory(env)
