@@ -359,7 +359,8 @@ async function handleLegacyMigrationRequest(request: Request, env: Env): Promise
   if (url.pathname !== '/__ops/migrate-legacy') return null
   if (request.method !== 'POST') return json({ error: 'Not found' }, 404)
   if (!env.MIGRATION_SECRET) return json({ error: 'Migration is not configured' }, 503)
-  if (request.headers.get('Authorization') !== `Bearer ${env.MIGRATION_SECRET.trim()}`) return json({ error: 'Unauthorized' }, 401)
+  const suppliedSecret = request.headers.get('X-VCT-Migration-Secret') ?? request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '')
+  if (suppliedSecret !== env.MIGRATION_SECRET.trim()) return json({ error: 'Unauthorized' }, 401)
   const result = await migrateLegacyHistory(env)
   return json({ status: 'migrated', ...result })
 }
