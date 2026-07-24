@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuthProvider, AuthSession } from './auth/types'
+import type { AuthProvider, AuthSession, PublicHumanProfile } from './auth/types'
 import { AgentInvitePage } from './components/AgentInvitePage'
 import { AgentAuthorizationPage } from './components/AgentAuthorizationPage'
 import { AuthScreen } from './components/AuthScreen'
@@ -334,7 +334,11 @@ export function App() {
 
   if (surface === 'profile') {
     const pathProfileId = window.location.pathname.startsWith('/p/') ? decodeURIComponent(window.location.pathname.slice(3)) : undefined
-    return <ProfilePage session={authSession} profileId={pathProfileId} onBack={backFromProfile} onSignIn={() => {
+    return <ProfilePage session={authSession} profileId={pathProfileId} onBack={backFromProfile} onProfileUpdated={(updated: PublicHumanProfile) => {
+      if (!authSession || updated.id !== authSession.user.id) return
+      setAuthSession({ ...authSession, user: { ...authSession.user, displayName: updated.displayName, handle: updated.handle, headline: updated.headline, githubUrl: updated.githubUrl, linkedinUrl: updated.linkedinUrl } })
+      setProfile((current) => ({ ...current, displayName: updated.displayName, handle: updated.handle }))
+    }} onSignIn={() => {
       setAuthPendingProvider('github')
       beginOAuth('github', window.location.pathname)
     }} />

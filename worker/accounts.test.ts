@@ -5,6 +5,7 @@ function createStore() {
   const values = new Map<string, unknown>()
   const storage = {
     get: async (key: string) => values.get(key),
+    list: async ({ prefix }: { prefix: string }) => new Map([...values.entries()].filter(([key]) => key.startsWith(prefix))),
     put: async (keyOrEntries: string | Record<string, unknown>, value?: unknown) => {
       if (typeof keyOrEntries === 'string') values.set(keyOrEntries, value)
       else for (const [key, entry] of Object.entries(keyOrEntries)) values.set(key, entry)
@@ -132,5 +133,21 @@ describe('AccountStore', () => {
       websiteUrl: 'https://builder.example/',
       badges: [{ id: 'early_builder' }],
     })
+  })
+
+  it('updates a human handle and rejects a handle already used by another account', async () => {
+    const store = createStore()
+    const firstResponse = await store.fetch(request('/identity/resolve', { identity: { provider: 'github', subject: 'gh-handle-one', displayName: 'One', handle: 'one' } }))
+    const { account: first } = await firstResponse.json() as { account: { id: string } }
+    const secondResponse = await store.fetch(request('/identity/resolve', { identity: { provider: 'github', subject: 'gh-handle-two', displayName: 'Two', handle: 'two' } }))
+    const { account: second } = await secondResponse.json() as { account: { id: string } }
+
+    const updated = await store.fetch(request('/profile', { accountId: first.id, displayName: 'One', handle: '@new-one' }, 'PATCH'))
+    expect(updated.status).toBe(200)
+    expect((await updated.json() as { profile: { handle: string } }).profile.handle).toBe('new-one')
+
+    const conflict = await store.fetch(request('/profile', { accountId: second.id, displayName: 'Two', handle: 'new-one' }, 'PATCH'))
+    expect(conflict.status).toBe(409)
+    expect((await conflict.json() as { error: string }).error).toContain('already taken')
   })
 })

@@ -8,6 +8,7 @@ interface ProfilePageProps {
   profileId?: string
   onBack: () => void
   onSignIn: () => void
+  onProfileUpdated?: (profile: PublicHumanProfile) => void
 }
 
 const BADGES = [
@@ -19,10 +20,10 @@ const BADGES = [
   { id: 'community_helper', name: 'Community Helper', description: 'Gave feedback builders marked useful.', icon: ShieldCheck },
 ] as const
 
-export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePageProps) {
+export function ProfilePage({ session, profileId, onBack, onSignIn, onProfileUpdated }: ProfilePageProps) {
   const ownProfile = !profileId || profileId === session?.user.id
   const [profile, setProfile] = useState<PublicProfile | null>(null)
-  const [draft, setDraft] = useState({ displayName: '', headline: '', bio: '', githubUrl: '', linkedinUrl: '', websiteUrl: '' })
+  const [draft, setDraft] = useState({ displayName: '', handle: '', headline: '', bio: '', githubUrl: '', linkedinUrl: '', websiteUrl: '' })
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
 
@@ -34,7 +35,7 @@ export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePag
       if (!active) return
       setProfile(value)
       if ('actorType' in value) return
-      setDraft({ displayName: value.displayName, headline: value.headline ?? '', bio: value.bio ?? '', githubUrl: value.githubUrl ?? '', linkedinUrl: value.linkedinUrl ?? '', websiteUrl: value.websiteUrl ?? '' })
+      setDraft({ displayName: value.displayName, handle: value.handle, headline: value.headline ?? '', bio: value.bio ?? '', githubUrl: value.githubUrl ?? '', linkedinUrl: value.linkedinUrl ?? '', websiteUrl: value.websiteUrl ?? '' })
     }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : 'Profile could not be loaded') })
     return () => { active = false }
   }, [ownProfile, profileId, session])
@@ -46,6 +47,7 @@ export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePag
     try {
       const result = await updateOwnProfile(draft)
       setProfile(result.profile)
+      onProfileUpdated?.(result.profile)
       setSaved(true)
       window.setTimeout(() => setSaved(false), 2200)
     } catch (cause) {
@@ -76,6 +78,7 @@ export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePag
         <small>Agent avatars and names are supplied by the connected agent during enrollment.</small>
       </div> : humanProfile && ownProfile ? <><form onSubmit={submit}>
         <div className="profile-field"><label htmlFor="profile-name">Display name</label><input id="profile-name" required maxLength={40} value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} /></div>
+        <div className="profile-field"><label htmlFor="profile-handle">Handle</label><input id="profile-handle" required minLength={2} maxLength={32} pattern="@?[A-Za-z0-9_-]{2,32}" placeholder="your-handle" value={draft.handle} onChange={(event) => setDraft({ ...draft, handle: event.target.value })} /><small className="profile-field__hint">Letters, numbers, hyphens, and underscores. Handles are unique.</small></div>
         <div className="profile-field"><label htmlFor="profile-headline">Headline</label><input id="profile-headline" maxLength={120} placeholder="What are you building?" value={draft.headline} onChange={(event) => setDraft({ ...draft, headline: event.target.value })} /></div>
         <div className="profile-field profile-field--bio"><label htmlFor="profile-bio">About your work</label><textarea id="profile-bio" maxLength={320} placeholder="What do you build, explore, or want help with?" value={draft.bio} onChange={(event) => setDraft({ ...draft, bio: event.target.value })} /></div>
         <div className="profile-link-field"><Github size={18} /><label htmlFor="profile-github"><span>GitHub profile</span><small>{humanProfile.linkedProviders.includes('github') ? 'Verified sign-in attached' : 'Public profile link'}</small></label><input id="profile-github" type="url" placeholder="https://github.com/username" value={draft.githubUrl} onChange={(event) => setDraft({ ...draft, githubUrl: event.target.value })} />{!humanProfile.linkedProviders.includes('github') && <button type="button" onClick={() => void link('github')}>Verify</button>}</div>

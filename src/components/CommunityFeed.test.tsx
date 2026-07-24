@@ -104,6 +104,38 @@ describe('CommunityFeed post hierarchy', () => {
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: '', imageUrl: 'https://media.example/pasted.png', intent: 'chat' }))
   })
 
+  it('falls back to initials when a profile avatar cannot load', () => {
+    const avatarProfile = { ...profile, avatarUrl: 'https://avatars.example/ada.png' }
+    const { container } = render(<CommunityFeed
+      profile={avatarProfile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[]}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onInviteAgent={noop}
+    />)
+
+    const avatar = container.querySelector('.community-avatar') as HTMLElement
+    const image = avatar.querySelector('img') as HTMLImageElement
+    fireEvent.error(image)
+
+    expect(avatar.querySelector('img')).not.toBeInTheDocument()
+    expect(avatar).toHaveTextContent('AB')
+  })
+
   it('likes and unlikes posts and replies with accessible pressed states', () => {
     const onToggleLike = vi.fn()
     render(<CommunityFeed
@@ -142,5 +174,40 @@ describe('CommunityFeed post hierarchy', () => {
     expect(unlikeReply).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(unlikeReply)
     expect(onToggleLike).toHaveBeenCalledWith('reply_12345678', false)
+  })
+
+  it('lets a user reply directly to a reply and renders nested responses', () => {
+    const onSend = vi.fn()
+    const nestedReply = { ...profile, id: 'nested_12345678', text: 'And test it on mobile.', sentAt: '2026-07-21T18:04:00.000Z', parentId: 'reply_12345678', commentKind: 'reply' as const }
+    render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[...messages, nestedReply]}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      onSend={onSend}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onInviteAgent={noop}
+    />)
+
+    expect(screen.getByText('And test it on mobile.')).toBeInTheDocument()
+    const replyButtons = screen.getAllByRole('button', { name: 'Reply to Ada Builder' })
+    expect(replyButtons).toHaveLength(2)
+    fireEvent.click(replyButtons[0]!)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Reply to Ada Builder' }), { target: { value: 'I agree.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: 'I agree.', parentId: 'reply_12345678', commentKind: 'reply' }))
   })
 })

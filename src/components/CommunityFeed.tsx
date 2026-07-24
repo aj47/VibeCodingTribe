@@ -22,7 +22,7 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent, type ReactNode } from 'react'
 import type { AuthProvider } from '../auth/types'
 import { COMMUNITY_INTENTS, type CommunityPostInput, type CommunityPostIntent } from '../community/types'
 import type { RealtimeMessageRecord, RealtimeProfile } from '../realtime/protocol'
@@ -87,8 +87,14 @@ function relativeTime(timestamp: string) {
 }
 
 function Avatar({ item }: { item: Pick<RealtimeProfile, 'displayName' | 'avatarColor' | 'avatarUrl'> }) {
+  const [imageFailed, setImageFailed] = useState(false)
+
+  useEffect(() => setImageFailed(false), [item.avatarUrl])
+
   return <span className="community-avatar" style={{ background: item.avatarColor }}>
-    {item.avatarUrl ? <img src={item.avatarUrl} alt="" referrerPolicy="no-referrer" /> : initials(item.displayName)}
+    {item.avatarUrl && !imageFailed
+      ? <img src={item.avatarUrl} alt="" referrerPolicy="no-referrer" onError={() => setImageFailed(true)} />
+      : initials(item.displayName)}
   </span>
 }
 
@@ -168,6 +174,39 @@ export function CommunityFeed({
     .filter((message) => !message.parentId && message.intent === 'needs_feedback')
     .sort((a, b) => b.sentAt.localeCompare(a.sentAt)).slice(0, 4), [messages])
   const composerMeta = COMMUNITY_INTENTS.find((item) => item.value === intent) ?? COMMUNITY_INTENTS[0]
+
+  function beginReply(parentId: string, nextKind: 'reply' | 'feedback' = 'reply') {
+    setCommentKind(nextKind)
+    setReply('')
+    setReplyImage(null)
+    setReplyImageError(null)
+    setReplyingTo(parentId)
+    requestAnimationFrame(() => replyRef.current?.focus())
+  }
+
+  function replyComposer(parentId: string, displayName: string) {
+    if (replyingTo !== parentId) return null
+    return <form className="community-reply-form" onSubmit={(event) => void publishReply(event, parentId)}><textarea ref={replyRef} aria-label={`Reply to ${displayName}`} placeholder="Leave useful feedback, ask a question, or paste an image…" value={reply} onPaste={(event) => capturePastedImage(event, 'reply')} onChange={(event) => setReply(event.target.value)} />{replyImage && <PastedImagePreview image={replyImage} onRemove={() => setReplyImage(null)} />}{replyImageError && <p className="community-image-error" role="alert">{replyImageError}</p>}<div><span><button className={commentKind === 'feedback' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('feedback')}>Feedback</button><button className={commentKind === 'reply' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('reply')}>Reply</button></span><button type="button" aria-label="Cancel reply" onClick={() => { setReplyingTo(null); setReplyImage(null); setReplyImageError(null) }}><X size={14} /></button><button className="community-publish" type="submit" disabled={(!reply.trim() && !replyImage) || publishingReply}>{publishingReply ? <LoaderCircle className="is-spinning" size={14} /> : 'Send'}</button></div></form>
+  }
+
+  function renderReply(item: RealtimeMessageRecord, depth = 0): ReactNode {
+    if (depth > 12) return null
+    const children = replies.get(item.id) ?? []
+    return <div className={`community-reply community-reply--${item.commentKind === 'feedback' ? 'feedback' : 'reply'}`} key={item.id}>
+      <button type="button" onClick={() => item.profileId && onOpenProfile(item.profileId)}><Avatar item={item} /></button>
+      <div>
+        <span><strong>{item.displayName}</strong> · {relativeTime(item.sentAt)} <em>{item.commentKind === 'feedback' ? 'Feedback' : 'Reply'}</em></span>
+        {item.text && <p>{item.text}</p>}
+        {item.imageUrl && <img className="community-reply-image" src={item.imageUrl} alt={item.text || 'Image shared in this response'} loading="lazy" />}
+        <div className="community-reply-actions">
+          <button className="community-reply-action" type="button" aria-label={`Reply to ${item.displayName}`} disabled={!canPost} onClick={() => beginReply(item.id)}><MessageCircle size={12} /> Reply</button>
+          <button className="community-reply-like" type="button" disabled={!canPost} aria-pressed={item.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${item.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} response by ${item.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(item.id, !(item.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={12} fill="currentColor" /> {item.likedByClientIds?.length ? item.likedByClientIds.length : 'Like'}</button>
+        </div>
+        {replyComposer(item.id, item.displayName)}
+        {children.length > 0 && <div className="community-reply-children" aria-label={`Replies to ${item.displayName}`}>{children.map((child) => renderReply(child, depth + 1))}</div>}
+      </div>
+    </div>
+  }
 
   function capturePastedImage(event: ClipboardEvent<HTMLTextAreaElement>, target: 'post' | 'reply') {
     const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith('image/'))
@@ -336,12 +375,12 @@ export function CommunityFeed({
               {message.imageUrl && <figure className="community-post-image"><img src={message.imageUrl} alt={message.text || 'Image shared with this post'} loading="lazy" /></figure>}
               {message.buildName && <a className="community-build-attachment" href={message.buildUrl || '#'} target={message.buildUrl ? '_blank' : undefined} rel="noreferrer"><span><Rocket size={18} /></span><div><small>ATTACHED BUILD</small><strong>{message.buildName}</strong></div>{message.buildUrl && <ExternalLink size={14} />}</a>}
               <footer>
-                <button type="button" onClick={() => { setCommentKind(kind === 'feedback' ? 'feedback' : 'reply'); setReply(''); setReplyImage(null); setReplyImageError(null); setReplyingTo(message.id); requestAnimationFrame(() => replyRef.current?.focus()) }}><MessageCircle size={14} /> {postReplies.length ? `${postReplies.length} response${postReplies.length === 1 ? '' : 's'}` : kind === 'feedback' ? 'Give feedback' : 'Reply'}</button>
+                <button type="button" onClick={() => beginReply(message.id, kind === 'feedback' ? 'feedback' : 'reply')}><MessageCircle size={14} /> {postReplies.length ? `${postReplies.length} response${postReplies.length === 1 ? '' : 's'}` : kind === 'feedback' ? 'Give feedback' : 'Reply'}</button>
                 <button className="community-like" type="button" disabled={!canPost} aria-pressed={message.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${message.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} post by ${message.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(message.id, !(message.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={14} fill="currentColor" /> {message.likedByClientIds?.length ? message.likedByClientIds.length : 'Like'}</button>
                 <button type="button" onClick={() => void sharePost(message)}><Share2 size={14} /> {kind === 'showcase' ? 'Share showcase' : kind === 'feedback' ? 'Share request' : 'Share'}</button>
               </footer>
-              {postReplies.length > 0 && <div className="community-replies" aria-label={`Responses to ${message.displayName}`}>{postReplies.map((item) => <div className={`community-reply community-reply--${item.commentKind === 'feedback' ? 'feedback' : 'reply'}`} key={item.id}><button type="button" onClick={() => item.profileId && onOpenProfile(item.profileId)}><Avatar item={item} /></button><div><span><strong>{item.displayName}</strong> · {relativeTime(item.sentAt)} <em>{item.commentKind === 'feedback' ? 'Feedback' : 'Reply'}</em></span>{item.text && <p>{item.text}</p>}{item.imageUrl && <img className="community-reply-image" src={item.imageUrl} alt={item.text || 'Image shared in this response'} loading="lazy" />}<button className="community-reply-like" type="button" disabled={!canPost} aria-pressed={item.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${item.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} response by ${item.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(item.id, !(item.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={12} fill="currentColor" /> {item.likedByClientIds?.length ? item.likedByClientIds.length : 'Like'}</button></div></div>)}</div>}
-              {replyingTo === message.id && <form className="community-reply-form" onSubmit={(event) => void publishReply(event, message.id)}><textarea ref={replyRef} aria-label={`Reply to ${message.displayName}`} placeholder="Leave useful feedback, ask a question, or paste an image…" value={reply} onPaste={(event) => capturePastedImage(event, 'reply')} onChange={(event) => setReply(event.target.value)} />{replyImage && <PastedImagePreview image={replyImage} onRemove={() => setReplyImage(null)} />}{replyImageError && <p className="community-image-error" role="alert">{replyImageError}</p>}<div><span><button className={commentKind === 'feedback' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('feedback')}>Feedback</button><button className={commentKind === 'reply' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('reply')}>Reply</button></span><button type="button" aria-label="Cancel reply" onClick={() => { setReplyingTo(null); setReplyImage(null); setReplyImageError(null) }}><X size={14} /></button><button className="community-publish" type="submit" disabled={(!reply.trim() && !replyImage) || publishingReply}>{publishingReply ? <LoaderCircle className="is-spinning" size={14} /> : 'Send'}</button></div></form>}
+              {postReplies.length > 0 && <div className="community-replies" aria-label={`Responses to ${message.displayName}`}>{postReplies.map((item) => renderReply(item))}</div>}
+              {replyComposer(message.id, message.displayName)}
             </article>
           })}
         </div>

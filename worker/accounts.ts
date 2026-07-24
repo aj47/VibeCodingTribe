@@ -1,4 +1,5 @@
 import type { AuthProvider, ProfileBadgeAward, PublicAgentProfile, PublicHumanProfile } from '../src/auth/types'
+import { normalizeHandle } from '../src/realtime/protocol'
 
 export interface AccountIdentity {
   provider: AuthProvider
@@ -155,6 +156,13 @@ function safeString(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, max) : ''
 }
 
+function validHumanHandle(value: unknown) {
+  if (typeof value !== 'string') return null
+  const raw = value.trim().replace(/^@/, '')
+  if (!/^[a-zA-Z0-9_-]{2,32}$/.test(raw)) return null
+  return normalizeHandle(raw).toLowerCase()
+}
+
 function validAgentAvatarUrl(value: unknown) {
   if (value === undefined || value === null || value === '') return undefined
   if (typeof value !== 'string' || value.length > 2_048) return null
@@ -290,9 +298,17 @@ export class AccountStore implements DurableObject {
     const headline = safeString(body?.headline, 120)
     const bio = safeString(body?.bio, 320)
     if (!displayName) return json({ error: 'Display name is required' }, 400)
+    const handle = body?.handle === undefined ? account.handle : validHumanHandle(body.handle)
+    if (!handle) return json({ error: 'Handle must be 2–32 letters, numbers, hyphens, or underscores.' }, 400)
+    if (handle !== account.handle.toLowerCase()) {
+      const accounts = await this.state.storage.list<HumanAccount>({ prefix: ACCOUNT_PREFIX })
+      const unavailable = [...accounts.values()].some((candidate) => candidate.id !== account.id && candidate.handle.toLowerCase() === handle)
+      if (unavailable) return json({ error: `@${handle} is already taken. Choose another handle.` }, 409)
+    }
     const updated: HumanAccount = {
       ...account,
       displayName,
+      handle,
       headline,
       bio,
       githubUrl,
