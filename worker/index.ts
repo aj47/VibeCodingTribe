@@ -22,6 +22,7 @@ interface Env extends AuthEnv {
   ACCOUNTS: DurableObjectNamespace
   MEDIA?: R2Bucket
   LOCAL_PREVIEW?: string
+  MIGRATION_SECRET?: string
 }
 
 interface ConnectionAttachment extends RealtimeProfile {
@@ -353,9 +354,21 @@ export async function migrateLegacyHistory(env: Env) {
   return response.json()
 }
 
+async function handleLegacyMigrationRequest(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url)
+  if (url.pathname !== '/__ops/migrate-legacy') return null
+  if (request.method !== 'POST' || !env.MIGRATION_SECRET || request.headers.get('Authorization') !== `Bearer ${env.MIGRATION_SECRET}`) {
+    return json({ error: 'Not found' }, 404)
+  }
+  const result = await migrateLegacyHistory(env)
+  return json({ status: 'migrated', ...result })
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
+    const migrationResponse = await handleLegacyMigrationRequest(request, env)
+    if (migrationResponse) return migrationResponse
     const authResponse = await handleAuthRequest(request, env)
     if (authResponse) return authResponse
     const accountResponse = await handleAccountApi(request, env)
