@@ -75,6 +75,13 @@ function normalizeHistory(value: unknown, fallbackChannelId: CommunityChannelId)
   })
 }
 
+function legacyChannelForMessage(message: Pick<RealtimeMessageRecord, 'intent' | 'parentId'>, parentChannels: Map<string, CommunityChannelId>): CommunityChannelId {
+  if (message.parentId && parentChannels.has(message.parentId)) return parentChannels.get(message.parentId)!
+  if (message.intent === 'needs_feedback') return 'feedback'
+  if (message.intent === 'showcase' || message.intent === 'update') return 'showcases'
+  return 'general'
+}
+
 function isAllowedOrigin(request: Request, allowedOrigins: string) {
   const origin = request.headers.get('Origin')
   if (!origin) return true
@@ -343,14 +350,29 @@ export async function migrateLegacyHistory(env: Env) {
   const legacyResponse = await env.LIVE_ROOM.get(legacyId).fetch(new Request('https://internal/internal/export?channelId=general'))
   if (!legacyResponse.ok) throw new Error(`Legacy room export failed with ${legacyResponse.status}`)
   const legacy = await legacyResponse.json() as { messages?: unknown[] }
-  const generalId = env.LIVE_ROOM.idFromName(channelRoomName(DEFAULT_CHANNEL_ID))
-  const response = await env.LIVE_ROOM.get(generalId).fetch(new Request('https://internal/internal/import?channelId=general', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ channelId: DEFAULT_CHANNEL_ID, messages: legacy.messages ?? [] }),
-  }))
-  if (!response.ok) throw new Error(`General channel import failed with ${response.status}`)
-  return response.json()
+  const records = (legacy.messages ?? []).filter(isRecord).sort((a, b) => String(a.sentAt ?? '').localeCompare(String(b.sentAt ?? '')))
+  const parentChannels = new Map<string, CommunityChannelId>()
+  const grouped: Record<CommunityChannelId, RealtimeMessageRecord[]> = { general: [], showcases: [], feedback: [] }
+  for (const rawMessage of records) {
+    const message = rawMessage as unknown as RealtimeMessageRecord
+    const channelId = legacyChannelForMessage(message, parentChannels)
+    if (typeof message.id === 'string') parentChannels.set(message.id, channelId)
+    grouped[channelId].push({ ...message, channelId } as RealtimeMessageRecord)
+  }
+
+  const imported: Record<CommunityChannelId, unknown> = { general: null, showcases: null, feedback: null }
+  for (const channelId of Object.keys(grouped) as CommunityChannelId[]) {
+    if (grouped[channelId].length === 0) continue
+    const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
+    const response = await env.LIVE_ROOM.get(roomId).fetch(new Request(`https://internal/internal/import?channelId=${channelId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId, messages: grouped[channelId] }),
+    }))
+    if (!response.ok) throw new Error(`${channelId} channel import failed with ${response.status}`)
+    imported[channelId] = await response.json()
+  }
+  return { status: 'migrated', channels: imported, count: records.length }
 }
 
 export default {

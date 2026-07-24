@@ -1,12 +1,10 @@
 import {
   ArrowUpRight,
-  BadgeCheck,
   Bell,
   Bot,
   ChevronDown,
   ExternalLink,
   Github,
-  Home,
   Heart,
   ImagePlus,
   Link2,
@@ -18,7 +16,6 @@ import {
   Rocket,
   Send,
   Share2,
-  Sparkles,
   UserRound,
   Users,
   X,
@@ -27,7 +24,7 @@ import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEve
 import type { AuthProvider } from '../auth/types'
 import { type CommunityChannelId } from '../community/channels'
 import { findActiveThreads, type ChannelActivityMap } from '../community/channel-navigation'
-import { COMMUNITY_INTENTS, type CommunityPostInput, type CommunityPostIntent } from '../community/types'
+import { type CommunityPostInput, type CommunityPostIntent } from '../community/types'
 import type { RealtimeMessageRecord, RealtimeProfile } from '../realtime/protocol'
 import { validateCommunityImage } from '../services/media'
 import { type LocalReadState } from '../services/read-state'
@@ -87,6 +84,12 @@ function postKind(message: Pick<RealtimeMessageRecord, 'intent'>): CommunityPost
   return 'chat'
 }
 
+function intentForChannel(channelId: CommunityChannelId): CommunityPostIntent {
+  if (channelId === 'feedback') return 'needs_feedback'
+  if (channelId === 'showcases') return 'showcase'
+  return 'chat'
+}
+
 function initials(value: string) {
   return value.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()
 }
@@ -101,7 +104,8 @@ function relativeTime(timestamp: string) {
 
 function Avatar({ item }: { item: Pick<RealtimeProfile, 'displayName' | 'avatarColor' | 'avatarUrl'> }) {
   return <span className="community-avatar" style={{ background: item.avatarColor }}>
-    {item.avatarUrl ? <img src={item.avatarUrl} alt="" referrerPolicy="no-referrer" /> : initials(item.displayName)}
+    <span aria-hidden="true">{initials(item.displayName)}</span>
+    {item.avatarUrl && <img src={item.avatarUrl} alt="" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = 'none' }} />}
   </span>
 }
 
@@ -135,18 +139,15 @@ export function CommunityFeed({
   localPreviewAvailable,
   onStartLocalPreview,
   onSignOut,
-  onOpenFeed,
-  onOpenMissions,
   onOpenChannel,
   onOpenThread,
   onReadThread,
   onOpenProfile,
   onOpenOwnProfile,
-  onOpenBadges,
   onInviteAgent,
 }: CommunityFeedProps) {
   const [draft, setDraft] = useState('')
-  const [intent, setIntent] = useState<CommunityPostIntent>(missionsOnly ? 'needs_feedback' : 'chat')
+  const [intent, setIntent] = useState<CommunityPostIntent>(() => missionsOnly ? 'needs_feedback' : intentForChannel(channelId))
   const [buildOpen, setBuildOpen] = useState(false)
   const [buildName, setBuildName] = useState('')
   const [buildUrl, setBuildUrl] = useState('')
@@ -165,8 +166,8 @@ export function CommunityFeed({
   const channelPickerButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    if (missionsOnly) setIntent('needs_feedback')
-  }, [missionsOnly])
+    setIntent(missionsOnly ? 'needs_feedback' : intentForChannel(channelId))
+  }, [channelId, missionsOnly])
 
   useEffect(() => {
     if (!channelPickerOpen) channelPickerButtonRef.current?.focus()
@@ -194,10 +195,6 @@ export function CommunityFeed({
   useEffect(() => {
     if (threadId && replies.has(threadId)) setReplyingTo(threadId)
   }, [replies, threadId])
-  const needsFeedback = useMemo(() => messages
-    .filter((message) => !message.parentId && message.intent === 'needs_feedback')
-    .sort((a, b) => b.sentAt.localeCompare(a.sentAt)).slice(0, 4), [messages])
-  const composerMeta = COMMUNITY_INTENTS.find((item) => item.value === intent) ?? COMMUNITY_INTENTS[0]
   const activeThreads = useMemo(() => findActiveThreads(messages, channelId), [channelId, messages])
   useEffect(() => {
     if (!threadId || !replies.has(threadId)) return
@@ -294,8 +291,7 @@ export function CommunityFeed({
       <div className="community-brand-button"><Brand /></div>
       <button ref={channelPickerButtonRef} className="community-mobile-channels" type="button" aria-label="Open channels" aria-expanded={channelPickerOpen} onClick={() => setChannelPickerOpen(true)}><Menu size={18} /><span>#{channelId}</span></button>
       <nav aria-label="Community navigation">
-        <button className={!missionsOnly ? 'is-active' : ''} type="button" onClick={onOpenFeed}><Home size={15} /> Feed</button>
-        <button className={missionsOnly ? 'is-active' : ''} type="button" onClick={onOpenMissions}><Radio size={15} /> Needs feedback</button>
+        <button type="button" onClick={onInviteAgent}><Bot size={15} /> Agent access</button>
       </nav>
       <div className="community-topbar__actions">
         <span className={`community-live community-live--${connectionStatus}`}><i />{connectionStatus === 'connected' ? `${onlineCount} live` : connectionStatus}</span>
@@ -330,12 +326,6 @@ export function CommunityFeed({
       <aside className="community-rail community-rail--left">
         <div className="community-rail__intro"><span>THE WORKSHOP IS OPEN</span><h2>Build in public.<br />Get unstuck together.</h2><p>Small updates count. Share the rough edge, not just the launch.</p></div>
         <ChannelSidebar selectedChannelId={channelId} activity={channelActivity} messages={messages} readState={readState} onSelectChannel={onOpenChannel} onOpenThread={openThread} onReadThread={onReadThread} />
-        <nav aria-label="Explore">
-          <button type="button" onClick={onOpenFeed}><Sparkles size={15} /> Latest builds</button>
-          <button type="button" onClick={onOpenMissions}><Radio size={15} /> Needs feedback</button>
-          <button type="button" onClick={onOpenBadges}><BadgeCheck size={15} /> Your badges</button>
-          <button type="button" onClick={onInviteAgent}><Bot size={15} /> Agent access</button>
-        </nav>
       </aside>
 
       <section className="community-feed" aria-label={missionsOnly ? 'Posts needing feedback' : 'Community feed'}>
@@ -347,13 +337,7 @@ export function CommunityFeed({
         {canPost ? <form className="community-composer" onSubmit={publish}>
           <Avatar item={profile} />
           <div className="community-composer__body">
-            <div className="community-kind-picker" role="group" aria-label="Choose post type">
-              {COMMUNITY_INTENTS.map((item) => {
-                const KindIcon = item.value === 'chat' ? MessageCircle : item.value === 'showcase' ? Rocket : Radio
-                return <button className={intent === item.value ? 'is-active' : ''} type="button" aria-label={`${item.label} — ${item.description}`} aria-pressed={intent === item.value} disabled={missionsOnly && item.value !== 'needs_feedback'} key={item.value} onClick={() => setIntent(item.value)}><KindIcon size={14} /><span><strong>{item.label}</strong><small>{item.description}</small></span></button>
-              })}
-            </div>
-            <textarea aria-label="Share what you are building" maxLength={4000} placeholder={intent === 'needs_feedback' ? 'What do you need another builder to look at?' : intent === 'showcase' ? 'What did you build or ship?' : 'Say something to the tribe…'} value={draft} onPaste={(event) => capturePastedImage(event, 'post')} onChange={(event) => setDraft(event.target.value)} />
+            <textarea aria-label="Share what you are building" maxLength={4000} placeholder={intent === 'needs_feedback' ? 'What do you need another builder to look at?' : intent === 'showcase' ? 'What did you build or ship?' : 'Share a session update with the tribe…'} value={draft} onPaste={(event) => capturePastedImage(event, 'post')} onChange={(event) => setDraft(event.target.value)} />
             {pastedImage && <PastedImagePreview image={pastedImage} onRemove={() => setPastedImage(null)} />}
             {imageError && <p className="community-image-error" role="alert">{imageError}</p>}
             {buildOpen && <div className="community-build-fields">
@@ -361,7 +345,7 @@ export function CommunityFeed({
               <label>Build link<input type="url" placeholder="https://" value={buildUrl} onChange={(event) => setBuildUrl(event.target.value)} /></label>
             </div>}
             <footer>
-              <span className="community-composer-hint">Posting as <strong>{composerMeta.label}</strong><i><ImagePlus size={12} /> Paste an image</i></span>
+              <span className="community-composer-hint">Posting to <strong>#{channelId}</strong><i><ImagePlus size={12} /> Paste an image</i></span>
               <div><button className="community-attach" type="button" aria-expanded={buildOpen} onClick={() => setBuildOpen((open) => !open)}><Link2 size={14} /> Attach build</button><button className="community-publish" type="submit" disabled={(!draft.trim() && !pastedImage) || publishing}>{publishing ? <><LoaderCircle className="is-spinning" size={14} /> Uploading</> : <><Send size={14} /> Post</>}</button></div>
             </footer>
           </div>
@@ -400,11 +384,6 @@ export function CommunityFeed({
         </div>
       </section>
 
-      <aside className="community-rail community-rail--wire" aria-label="Tribe Wire">
-        <header><div><i /><span>TRIBE WIRE</span></div><strong>Conversation, in context.</strong><p>This is the same community stream—not a separate chat room.</p></header>
-        <section><h2>Needs a second pair of eyes</h2>{needsFeedback.length === 0 ? <p className="community-wire-empty">Fresh feedback requests will land here.</p> : needsFeedback.map((message) => <button type="button" key={message.id} onClick={onOpenMissions}><Avatar item={message} /><span><strong>{message.displayName}</strong><small>{message.text}</small></span><MessageCircle size={14} /></button>)}</section>
-        <footer><span><i /> {onlineCount} live now</span><p>The feed updates as builders post.</p></footer>
-      </aside>
     </main>
   </div>
 }

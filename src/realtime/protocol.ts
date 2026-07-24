@@ -191,7 +191,12 @@ export function parseRealtimeServerEvent(value: unknown): RealtimeServerEvent | 
 
 export function normalizeRealtimeMessageRecord(value: unknown): RealtimeMessageRecord | null {
   if (!isRecord(value)) return null
-  const normalized = { ...value, channelId: normalizeCommunityChannelId(value.channelId) }
+  const avatarUrl = normalizeAvatarUrl(value.avatarUrl)
+  const normalized = {
+    ...value,
+    channelId: normalizeCommunityChannelId(value.channelId),
+    ...(avatarUrl ? { avatarUrl } : { avatarUrl: undefined }),
+  }
   return isRealtimeMessageRecord(normalized) ? normalized : null
 }
 

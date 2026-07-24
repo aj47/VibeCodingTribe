@@ -66,6 +66,35 @@ describe('RealtimeRoom channel isolation', () => {
     ])
   })
 
+  it('moves legacy showcases and feedback into their channel rooms', async () => {
+    const legacyState = createState([
+      { id: 'legacy_general_1', clientId: 'client_12345678', displayName: 'Legacy', handle: 'legacy', avatarColor: '#657c54', text: 'chat', sentAt: '2026-07-18T20:00:00.000Z' },
+      { id: 'legacy_showcase_1', clientId: 'client_12345678', displayName: 'Legacy', handle: 'legacy', avatarColor: '#657c54', text: 'shipped', intent: 'showcase', sentAt: '2026-07-18T20:01:00.000Z' },
+      { id: 'legacy_feedback_1', clientId: 'client_12345678', displayName: 'Legacy', handle: 'legacy', avatarColor: '#657c54', text: 'need eyes', intent: 'needs_feedback', sentAt: '2026-07-18T20:02:00.000Z' },
+      { id: 'legacy_feedback_reply_1', clientId: 'client_12345678', displayName: 'Legacy', handle: 'legacy', avatarColor: '#657c54', text: 'looks good', parentId: 'legacy_feedback_1', sentAt: '2026-07-18T20:03:00.000Z' },
+    ])
+    const rooms = new Map<string, RealtimeRoom>([
+      ['vibecodingtribe.com/r/general', new RealtimeRoom(legacyState as never)],
+      ['vibecodingtribe.com/channel/general', new RealtimeRoom(createState() as never)],
+      ['vibecodingtribe.com/channel/showcases', new RealtimeRoom(createState() as never)],
+      ['vibecodingtribe.com/channel/feedback', new RealtimeRoom(createState() as never)],
+    ])
+    const env = { LIVE_ROOM: { idFromName: (name: string) => name, get: (id: string) => ({ fetch: (request: Request) => rooms.get(id)!.fetch(request) }) } }
+
+    await migrateLegacyHistory(env as never)
+    const read = async (channelId: 'general' | 'showcases' | 'feedback') => {
+      const result = await rooms.get(`vibecodingtribe.com/channel/${channelId}`)!.fetch(new Request(`https://internal/internal/export?channelId=${channelId}`))
+      return (await result.json() as { messages: Array<{ id: string; channelId: string; parentId?: string }> }).messages
+    }
+
+    expect(await read('general')).toEqual([expect.objectContaining({ id: 'legacy_general_1', channelId: 'general' })])
+    expect(await read('showcases')).toEqual([expect.objectContaining({ id: 'legacy_showcase_1', channelId: 'showcases' })])
+    expect(await read('feedback')).toEqual([
+      expect.objectContaining({ id: 'legacy_feedback_1', channelId: 'feedback' }),
+      expect.objectContaining({ id: 'legacy_feedback_reply_1', channelId: 'feedback', parentId: 'legacy_feedback_1' }),
+    ])
+  })
+
   it('backfills legacy records to general and does not import another channel', async () => {
     const state = createState()
     const room = new RealtimeRoom(state as never)

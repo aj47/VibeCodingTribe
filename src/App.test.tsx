@@ -16,7 +16,7 @@ describe('App community loop', () => {
 
     expect(screen.getByRole('heading', { name: 'What are you building?' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Community feed' })).toBeInTheDocument()
-    expect(screen.getByRole('complementary', { name: 'Tribe Wire' })).toHaveTextContent(/same community stream.*not a separate chat room/i)
+    expect(screen.queryByRole('complementary', { name: 'Tribe Wire' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'GitHub' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'LinkedIn' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Local preview' })).toBeInTheDocument()
@@ -38,7 +38,7 @@ describe('App community loop', () => {
 
     expect(screen.getByRole('heading', { name: 'Builders who need your eyes' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Posts needing feedback' })).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Needs feedback' })[0]).toHaveClass('is-active')
+    expect(screen.getByRole('navigation', { name: 'Channels' })).toHaveTextContent('Feedback')
   })
 
   it('redirects the retired exchange route to Needs Feedback', async () => {

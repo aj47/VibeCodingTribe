@@ -31,7 +31,6 @@ describe('CommunityFeed post hierarchy', () => {
 
   it('separates chat, showcases, feedback requests, replies, and feedback', () => {
     const onOpenChannel = vi.fn()
-    const onOpenBadges = vi.fn()
     const { container } = render(<CommunityFeed
       profile={profile}
       provider="github"
@@ -57,11 +56,11 @@ describe('CommunityFeed post hierarchy', () => {
       onReadThread={noop}
       onOpenProfile={noop}
       onOpenOwnProfile={noop}
-      onOpenBadges={onOpenBadges}
+      onOpenBadges={noop}
       onInviteAgent={noop}
     />)
 
-    expect(screen.getByRole('button', { name: /Chat.*A quick thought or conversation/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('group', { name: 'Choose post type' })).not.toBeInTheDocument()
     expect(container.querySelectorAll('.community-post--chat')).toHaveLength(1)
     expect(container.querySelectorAll('.community-post--showcase')).toHaveLength(1)
     expect(container.querySelectorAll('.community-post--feedback')).toHaveLength(1)
@@ -72,8 +71,6 @@ describe('CommunityFeed post hierarchy', () => {
     expect(within(feedbackPost as HTMLElement).getByRole('button', { name: /1 response/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /ShowcasesProgress, launches, and builds in public/ }))
     expect(onOpenChannel).toHaveBeenCalledWith('showcases')
-    fireEvent.click(screen.getByRole('button', { name: 'Your badges' }))
-    expect(onOpenBadges).toHaveBeenCalledOnce()
   })
 
   it('accepts an image pasted into the composer and publishes an image-only post', async () => {
@@ -169,5 +166,43 @@ describe('CommunityFeed post hierarchy', () => {
     expect(unlikeReply).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(unlikeReply)
     expect(onToggleLike).toHaveBeenCalledWith('reply_12345678', false)
+  })
+
+  it('falls back to initials when a profile image cannot load', () => {
+    const brokenAvatarMessage = { ...messages[0], avatarUrl: 'https://cdn.example/broken.png' }
+    const { container } = render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[brokenAvatarMessage]}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    const avatar = container.querySelector('.community-post .community-avatar') as HTMLElement
+    const image = avatar.querySelector('img') as HTMLImageElement
+    fireEvent.error(image)
+    expect(avatar.querySelector('span')).toHaveTextContent('AB')
+    expect(image.style.display).toBe('none')
   })
 })
