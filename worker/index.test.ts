@@ -2,33 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import worker from './index'
 
 describe('public room access', () => {
-  it('keeps the one-time legacy migration operation narrowly authenticated', async () => {
-    const idFromName = vi.fn((name: string) => name)
-    const legacyMessages = [{ id: 'legacy_1', text: 'old history' }]
-    const fetch = vi.fn((request: Request) => request.url.includes('/internal/export')
-      ? Response.json({ messages: legacyMessages })
-      : Response.json({ channelId: 'general', imported: 1, count: 1 }))
-    const env = {
-      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
-      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
-      MIGRATION_SECRET: 'temporary-secret',
-      LIVE_ROOM: { idFromName, get: vi.fn(() => ({ fetch })) },
-    }
-
-    const denied = await worker.fetch(new Request('https://worker.example/__ops/migrate-legacy', { method: 'POST' }), env as never)
-    expect(denied.status).toBe(404)
-    expect(fetch).not.toHaveBeenCalled()
-
-    const response = await worker.fetch(new Request('https://worker.example/__ops/migrate-legacy', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer temporary-secret' },
-    }), env as never)
-    expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({ status: 'migrated', imported: 1, count: 1 })
-    expect(idFromName).toHaveBeenNthCalledWith(1, 'vibecodingtribe.com/r/general')
-    expect(idFromName).toHaveBeenNthCalledWith(2, 'vibecodingtribe.com/channel/general')
-  })
-
   it('forwards anonymous viewers to the room as read-only connections', async () => {
     const roomFetch = vi.fn((request: Request) => Response.json({ url: request.url }))
     const env = {
