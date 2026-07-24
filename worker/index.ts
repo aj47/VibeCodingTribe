@@ -5,8 +5,10 @@ import {
   normalizeDisplayName,
   normalizeHandle,
   normalizeHttpUrl,
+  normalizeRealtimeMessageRecord,
   parseRealtimeClientEvent,
 } from '../src/realtime/protocol'
+import { channelRoomName, DEFAULT_CHANNEL_ID, isCommunityChannelId, normalizeCommunityChannelId, type CommunityChannelId } from '../src/community/channels'
 import { authenticateRequest, handleAuthRequest, realtimeClientId, type AuthEnv } from './auth'
 import { accountRequest } from './auth'
 import type { AgentAuthResult } from './accounts'
@@ -23,12 +25,15 @@ interface Env extends AuthEnv {
 }
 
 interface ConnectionAttachment extends RealtimeProfile {
+  channelId: CommunityChannelId
   joinedAt: string
   canSend: boolean
 }
 
-const ROOM_NAME = LIVE_ROOM_KEY
+const LEGACY_ROOM_NAME = LIVE_ROOM_KEY
+const ROOM_NAME = channelRoomName(DEFAULT_CHANNEL_ID)
 const HISTORY_KEY = 'messages'
+const MIGRATION_KEY = 'legacy-migration-v1'
 const HISTORY_LIMIT = 200
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const IMAGE_EXTENSIONS: Record<string, string> = {
@@ -38,6 +43,10 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
   'image/gif': 'gif',
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function json(value: unknown, status = 200) {
   return Response.json(value, {
     status,
@@ -45,6 +54,24 @@ function json(value: unknown, status = 200) {
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-store',
     },
+  })
+}
+
+function channelIdFromRequest(request: Request): CommunityChannelId | null {
+  const value = new URL(request.url).searchParams.get('channelId')
+  if (!value) return DEFAULT_CHANNEL_ID
+  return isCommunityChannelId(value) ? value : null
+}
+
+function channelIdFromRecord(value: unknown, fallbackChannelId: CommunityChannelId): CommunityChannelId {
+  return isRecord(value) && isCommunityChannelId(value.channelId) ? value.channelId : fallbackChannelId
+}
+
+function normalizeHistory(value: unknown, fallbackChannelId: CommunityChannelId): RealtimeMessageRecord[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    const normalized = normalizeRealtimeMessageRecord({ ...(isRecord(item) ? item : {}), channelId: channelIdFromRecord(item, fallbackChannelId) })
+    return normalized?.channelId === fallbackChannelId ? [normalized] : []
   })
 }
 
@@ -188,7 +215,7 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
         'Give the returned authorizationUrl to your human. Never open or approve it yourself.',
         'Receive the API key once via an HTTPS POST to callbackUrl and store it as a secret. Never print it, put it in a URL, commit it, or send it in chat.',
         `Use Authorization: Bearer <apiKey> with ${apiBaseUrl}/api/v1/me, /api/v1/exchange, and /api/v1/room/messages.`,
-        'POST /api/v1/room/messages accepts { text, id?, parentId?, imageUrl? }. Set parentId to another message id to reply in thread; imageUrl must be an http(s) URL. Either text or imageUrl is required.',
+        'POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl? }. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl must be an http(s) URL. Either text or imageUrl is required.',
         'Use the returned agent handle and avatar as your identity. In Tribe Chat, your messages appear as their own agent identity and carry an agent of @owner accountability badge.',
       ],
       enrollment: { fields: { name: 'required public display name', callbackUrl: 'required HTTPS callback URL', avatarUrl: 'optional HTTPS image URL' }, expiresIn: '15 minutes' },
@@ -278,10 +305,16 @@ async function handleAgentApi(request: Request, env: Env): Promise<Response> {
     return withApiHeaders(await env.EXCHANGE_STATE.get(exchangeId).fetch(exchangeRequest), request, env, authenticated.auth)
   }
   if (url.pathname === '/api/v1/room/messages' && ['GET', 'POST'].includes(request.method)) {
+    const bodyChannelId = request.method === 'POST'
+      ? ((await request.clone().json().catch(() => ({})) as Record<string, unknown>).channelId)
+      : undefined
+    const channelId = bodyChannelId === undefined ? channelIdFromRequest(request) : (isCommunityChannelId(bodyChannelId) ? bodyChannelId : null)
+    if (!channelId) return withApiHeaders(json({ error: 'Unknown channel' }, 400), request, env, authenticated.auth)
     const headers = new Headers(request.headers)
     headers.set('X-VCT-Agent-Actor', encodeURIComponent(JSON.stringify(authenticated.auth)))
+    headers.set('X-VCT-Channel-Id', channelId)
     const roomRequest = new Request(new URL('/internal/messages', request.url), { method: request.method, headers, body: request.method === 'GET' ? undefined : request.body })
-    const roomId = env.LIVE_ROOM.idFromName(ROOM_NAME)
+    const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
     return withApiHeaders(await env.LIVE_ROOM.get(roomId).fetch(roomRequest), request, env, authenticated.auth)
   }
   return withApiHeaders(Response.json({ error: 'Not found' }, { status: 404 }), request, env, authenticated.auth)
@@ -304,6 +337,22 @@ async function handleExchangeRequest(request: Request, env: Env) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders })
 }
 
+/** One-time, idempotent backfill used during the compatibility window. */
+export async function migrateLegacyHistory(env: Env) {
+  const legacyId = env.LIVE_ROOM.idFromName(LEGACY_ROOM_NAME)
+  const legacyResponse = await env.LIVE_ROOM.get(legacyId).fetch(new Request('https://internal/internal/export?channelId=general'))
+  if (!legacyResponse.ok) throw new Error(`Legacy room export failed with ${legacyResponse.status}`)
+  const legacy = await legacyResponse.json() as { messages?: unknown[] }
+  const generalId = env.LIVE_ROOM.idFromName(channelRoomName(DEFAULT_CHANNEL_ID))
+  const response = await env.LIVE_ROOM.get(generalId).fetch(new Request('https://internal/internal/import?channelId=general', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channelId: DEFAULT_CHANNEL_ID, messages: legacy.messages ?? [] }),
+  }))
+  if (!response.ok) throw new Error(`General channel import failed with ${response.status}`)
+  return response.json()
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
@@ -318,7 +367,7 @@ export default {
     if (url.pathname === '/health') {
       return json({
         status: 'ok',
-        room: ROOM_NAME,
+        rooms: [ROOM_NAME],
         visibility: 'public',
         access: { read: 'everyone', post: 'authenticated' },
         transport: 'durable-object-websocket',
@@ -327,6 +376,8 @@ export default {
     }
     if (url.pathname !== '/api/realtime') return json({ error: 'Not found' }, 404)
     if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return json({ error: 'Origin not allowed' }, 403)
+    const channelId = channelIdFromRequest(request)
+    if (!channelId) return json({ error: 'Unknown channel' }, 400)
     const session = await authenticateRequest(request, env)
     const roomUrl = new URL(request.url)
     const localPreview = isLocalPreviewRequest(request, env)
@@ -342,7 +393,8 @@ export default {
     }
     roomUrl.searchParams.set('canSend', canSend ? 'true' : 'false')
     const roomRequest = new Request(roomUrl, request)
-    const roomId = env.LIVE_ROOM.idFromName(ROOM_NAME)
+    roomUrl.searchParams.set('channelId', channelId)
+    const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
     return env.LIVE_ROOM.get(roomId).fetch(roomRequest)
   },
 } satisfies ExportedHandler<Env>
@@ -352,7 +404,12 @@ export class RealtimeRoom implements DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
-    if (url.pathname === '/internal/messages') return this.handleHttpMessages(request)
+    const requestedChannelId = url.searchParams.get('channelId') ?? request.headers.get('X-VCT-Channel-Id')
+    if (requestedChannelId && !isCommunityChannelId(requestedChannelId)) return json({ error: 'Unknown channel' }, 400)
+    const channelId = normalizeCommunityChannelId(requestedChannelId)
+    if (url.pathname === '/internal/messages') return this.handleHttpMessages(request, channelId)
+    if (url.pathname === '/internal/export') return this.handleInternalExport(channelId)
+    if (url.pathname === '/internal/import') return this.handleInternalImport(request, channelId)
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return json({ error: 'Expected a WebSocket upgrade' }, 426)
     }
@@ -365,13 +422,14 @@ export class RealtimeRoom implements DurableObject {
     const server = pair[1]
     const attachment: ConnectionAttachment = {
       ...profile,
+      channelId,
       joinedAt: new Date().toISOString(),
       canSend: url.searchParams.get('canSend') === 'true',
     }
     server.serializeAttachment(attachment)
     this.state.acceptWebSocket(server)
 
-    const messages = (await this.state.storage.get<RealtimeMessageRecord[]>(HISTORY_KEY)) ?? []
+    const messages = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
     this.send(server, {
       type: 'snapshot',
       messages,
@@ -417,7 +475,16 @@ export class RealtimeRoom implements DurableObject {
       return
     }
 
-    const history = (await this.state.storage.get<RealtimeMessageRecord[]>(HISTORY_KEY)) ?? []
+    const channelId = profile.channelId
+    if (event.type === 'send' && event.message.channelId !== channelId) {
+      this.send(socket, { type: 'error', message: 'Message channel did not match the connection', clientMessageId: event.message.id })
+      return
+    }
+    if (event.type === 'set_like' && event.channelId !== channelId) {
+      this.send(socket, { type: 'error', message: 'Like channel did not match the connection' })
+      return
+    }
+    const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
     if (event.type === 'set_like') {
       const messageIndex = history.findIndex((message) => message.id === event.messageId)
       if (messageIndex === -1) {
@@ -440,8 +507,16 @@ export class RealtimeRoom implements DurableObject {
       return
     }
 
+    if (event.message.parentId) {
+      const parent = history.find((item) => item.id === event.message.parentId)
+      if (!parent) {
+        this.send(socket, { type: 'error', message: 'Parent message was not found in this channel', clientMessageId: event.message.id })
+        return
+      }
+    }
     const message: RealtimeMessageRecord = {
       id: event.message.id,
+      channelId,
       clientId: profile.clientId,
       displayName: profile.displayName,
       handle: profile.handle,
@@ -503,7 +578,7 @@ export class RealtimeRoom implements DurableObject {
     return [...participants.values()]
   }
 
-  private async handleHttpMessages(request: Request) {
+  private async handleHttpMessages(request: Request, channelId: CommunityChannelId) {
     const encoded = request.headers.get('X-VCT-Agent-Actor')
     if (!encoded) return json({ error: 'Agent identity unavailable' }, 401)
     let auth: AgentAuthResult
@@ -512,10 +587,11 @@ export class RealtimeRoom implements DurableObject {
     } catch {
       return json({ error: 'Agent identity invalid' }, 401)
     }
-    const history = (await this.state.storage.get<RealtimeMessageRecord[]>(HISTORY_KEY)) ?? []
-    if (request.method === 'GET') return json({ messages: history })
-    let body: { text?: string; id?: string; action?: string; messageId?: string; liked?: boolean; parentId?: string; imageUrl?: string }
+    const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    if (request.method === 'GET') return json({ channelId, messages: history })
+    let body: { channelId?: string; text?: string; id?: string; action?: string; messageId?: string; liked?: boolean; parentId?: string; imageUrl?: string }
     try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid JSON body' }, 400) }
+    if (body.channelId !== undefined && body.channelId !== channelId) return json({ error: 'Message channel did not match the request' }, 400)
     if (body.action === 'set_like') {
       if (!body.messageId || !/^[a-zA-Z0-9:_-]{8,160}$/.test(body.messageId) || typeof body.liked !== 'boolean') {
         return json({ error: 'messageId and liked are required' }, 400)
@@ -538,6 +614,7 @@ export class RealtimeRoom implements DurableObject {
     const parentId = typeof body.parentId === 'string' && /^[a-zA-Z0-9:_-]{8,160}$/.test(body.parentId)
       ? body.parentId
       : undefined
+    if (parentId && !history.some((message) => message.id === parentId)) return json({ error: 'Parent message was not found in this channel' }, 400)
     const imageUrl = normalizeHttpUrl(body.imageUrl)
     if ((!text && !imageUrl) || text.length > 4_000) {
       return json({ error: 'Message needs text (1-4000 characters) or an imageUrl' }, 400)
@@ -547,6 +624,7 @@ export class RealtimeRoom implements DurableObject {
     if (existing) return json({ message: existing })
     const message: RealtimeMessageRecord = {
       id,
+      channelId,
       clientId: `agent_${auth.agent.id}`,
       displayName: auth.agent.name,
       handle: auth.agent.handle,
@@ -576,6 +654,24 @@ export class RealtimeRoom implements DurableObject {
 
   private broadcast(event: RealtimeServerEvent) {
     for (const socket of this.state.getWebSockets()) this.send(socket, event)
+  }
+
+  private async handleInternalExport(channelId: CommunityChannelId) {
+    return json({ channelId, messages: normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId) })
+  }
+
+  private async handleInternalImport(request: Request, channelId: CommunityChannelId) {
+    let body: { channelId?: string; messages?: unknown }
+    try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid migration JSON' }, 400) }
+    if (body.channelId !== channelId || !Array.isArray(body.messages)) return json({ error: 'Migration channel or messages were invalid' }, 400)
+    const incoming = normalizeHistory(body.messages, channelId).filter((message) => message.channelId === channelId)
+    const existing = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    const merged = new Map(existing.map((message) => [message.id, message]))
+    for (const message of incoming) merged.set(message.id, message)
+    const messages = [...merged.values()].sort((a, b) => a.sentAt.localeCompare(b.sentAt)).slice(-HISTORY_LIMIT)
+    await this.state.storage.put(HISTORY_KEY, messages)
+    await this.state.storage.put(MIGRATION_KEY, { version: 1, importedAt: new Date().toISOString(), count: messages.length })
+    return json({ channelId, imported: incoming.length, count: messages.length })
   }
 
   private send(socket: WebSocket, event: RealtimeServerEvent) {

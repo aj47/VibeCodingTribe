@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RealtimeServerEvent } from '../realtime/protocol'
+import type { RealtimeMessageRecord, RealtimeServerEvent } from '../realtime/protocol'
 import {
   createRealtimeMessageId,
   loadRealtimeProfile,
@@ -59,14 +59,15 @@ describe('RealtimeRoomClient', () => {
     )
     const id = createRealtimeMessageId(profile.clientId)
 
-    client.send({ id, text: 'hello live room' })
+    client.send({ id, channelId: 'general', text: 'hello live room' })
     client.connect()
     expect(socket.sent).toHaveLength(0)
     socket.open()
     expect(JSON.parse(socket.sent[0]!)).toMatchObject({ type: 'send', message: { id, text: 'hello live room' } })
 
-    const record = {
+    const record: RealtimeMessageRecord = {
       id,
+      channelId: 'general',
       clientId: profile.clientId,
       displayName: profile.displayName,
       handle: profile.handle,
@@ -115,7 +116,7 @@ describe('RealtimeRoomClient', () => {
     client.connect()
     socket.open()
 
-    expect(JSON.parse(socket.sent[0]!)).toEqual({ type: 'set_like', messageId: 'rt_message_12345678', liked: true })
+    expect(JSON.parse(socket.sent[0]!)).toEqual({ type: 'set_like', channelId: 'general', messageId: 'rt_message_12345678', liked: true })
     client.disconnect()
     vi.unstubAllGlobals()
   })
@@ -132,12 +133,50 @@ describe('RealtimeRoomClient', () => {
       false,
     )
 
-    client.send({ id: createRealtimeMessageId(profile.clientId), text: 'should not send' })
+    client.send({ id: createRealtimeMessageId(profile.clientId), channelId: 'general', text: 'should not send' })
     client.connect()
     socket.open()
 
     expect(socket.sent).toHaveLength(0)
     client.disconnect()
+    vi.unstubAllGlobals()
+  })
+
+  it('scopes the socket URL and durable outbox to the selected channel', () => {
+    const profile = loadRealtimeProfile()
+    const feedbackSocket = new FakeWebSocket()
+    const feedbackFactory = vi.fn((url: string) => { void url; return feedbackSocket as unknown as WebSocket })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const feedbackClient = new RealtimeRoomClient(
+      profile,
+      { onEvent: () => undefined, onStatus: () => undefined },
+      feedbackFactory,
+      undefined,
+      true,
+      'feedback',
+    )
+    feedbackClient.send({ id: createRealtimeMessageId(profile.clientId), channelId: 'feedback', text: 'feedback ask' })
+    feedbackClient.connect()
+    const feedbackUrl = new URL(feedbackFactory.mock.calls[0]?.[0] ?? '')
+
+    expect(feedbackUrl.searchParams.get('channelId')).toBe('feedback')
+    feedbackSocket.open()
+    expect(JSON.parse(feedbackSocket.sent[0]!)).toMatchObject({ type: 'send', message: { channelId: 'feedback' } })
+
+    const generalSocket = new FakeWebSocket()
+    const generalClient = new RealtimeRoomClient(
+      profile,
+      { onEvent: () => undefined, onStatus: () => undefined },
+      () => generalSocket as unknown as WebSocket,
+      undefined,
+      true,
+      'general',
+    )
+    generalClient.connect()
+    generalSocket.open()
+    expect(generalSocket.sent).toHaveLength(0)
+    feedbackClient.disconnect()
+    generalClient.disconnect()
     vi.unstubAllGlobals()
   })
 })

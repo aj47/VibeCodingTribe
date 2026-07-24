@@ -1,3 +1,5 @@
+import { DEFAULT_CHANNEL_ID, isCommunityChannelId, normalizeCommunityChannelId, type CommunityChannelId } from '../community/channels'
+
 export const LIVE_ROOM_KEY = 'vibecodingtribe.com/r/general'
 export const MAX_REALTIME_MESSAGE_LENGTH = 4_000
 
@@ -15,6 +17,7 @@ export interface RealtimeProfile {
 
 export interface RealtimeMessageRecord {
   id: string
+  channelId: CommunityChannelId
   clientId: string
   displayName: string
   handle: string
@@ -39,6 +42,7 @@ export interface RealtimeSendEvent {
   type: 'send'
   message: {
     id: string
+    channelId: CommunityChannelId
     text: string
     intent?: 'chat' | 'showcase' | 'needs_feedback' | 'update' | 'question'
     parentId?: string
@@ -51,6 +55,7 @@ export interface RealtimeSendEvent {
 
 export interface RealtimeSetLikeEvent {
   type: 'set_like'
+  channelId: CommunityChannelId
   messageId: string
   liked: boolean
 }
@@ -70,6 +75,11 @@ export type RealtimeServerEvent =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseChannelId(value: unknown): CommunityChannelId | null {
+  if (value === undefined) return DEFAULT_CHANNEL_ID
+  return isCommunityChannelId(value) ? value : null
 }
 
 export function normalizeDisplayName(value: string) {
@@ -96,12 +106,15 @@ export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | 
   if (value.type === 'set_like') {
     if (typeof value.messageId !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(value.messageId)) return null
     if (typeof value.liked !== 'boolean') return null
-    return { type: 'set_like', messageId: value.messageId, liked: value.liked }
+    const channelId = parseChannelId(value.channelId)
+    return channelId ? { type: 'set_like', channelId, messageId: value.messageId, liked: value.liked } : null
   }
   if (value.type !== 'send' || !isRecord(value.message)) return null
   const { id, text } = value.message
   if (typeof id !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(id)) return null
   if (typeof text !== 'string') return null
+  const channelId = parseChannelId(value.message.channelId)
+  if (!channelId) return null
   const trimmed = text.trim()
   const imageUrl = normalizeHttpUrl(value.message.imageUrl)
   if ((!trimmed && !imageUrl) || trimmed.length > MAX_REALTIME_MESSAGE_LENGTH) return null
@@ -120,6 +133,7 @@ export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | 
     type: 'send',
     message: {
       id,
+      channelId,
       text: trimmed,
       ...(intent ? { intent } : {}),
       ...(parentId ? { parentId } : {}),
@@ -144,15 +158,18 @@ export function normalizeHttpUrl(value: unknown) {
 export function parseRealtimeServerEvent(value: unknown): RealtimeServerEvent | null {
   if (!isRecord(value) || typeof value.type !== 'string') return null
   if (value.type === 'message' && isRecord(value.message)) {
-    return isRealtimeMessageRecord(value.message) ? { type: 'message', message: value.message } : null
+    const message = normalizeRealtimeMessageRecord(value.message)
+    return message ? { type: 'message', message } : null
   }
   if (value.type === 'snapshot') {
-    if (!Array.isArray(value.messages) || !value.messages.every(isRealtimeMessageRecord)) return null
+    if (!Array.isArray(value.messages)) return null
+    const messages = value.messages.map((message) => normalizeRealtimeMessageRecord(message)).filter((message): message is RealtimeMessageRecord => Boolean(message))
+    if (messages.length !== value.messages.length) return null
     if (!Array.isArray(value.participants) || !value.participants.every(isRealtimeProfile)) return null
     if (typeof value.onlineCount !== 'number') return null
     return {
       type: 'snapshot',
-      messages: value.messages,
+      messages,
       participants: value.participants,
       onlineCount: value.onlineCount,
     }
@@ -172,6 +189,12 @@ export function parseRealtimeServerEvent(value: unknown): RealtimeServerEvent | 
   return null
 }
 
+export function normalizeRealtimeMessageRecord(value: unknown): RealtimeMessageRecord | null {
+  if (!isRecord(value)) return null
+  const normalized = { ...value, channelId: normalizeCommunityChannelId(value.channelId) }
+  return isRealtimeMessageRecord(normalized) ? normalized : null
+}
+
 export function isRealtimeProfile(value: unknown): value is RealtimeProfile {
   return isRecord(value)
     && typeof value.clientId === 'string'
@@ -188,6 +211,8 @@ export function isRealtimeProfile(value: unknown): value is RealtimeProfile {
 export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessageRecord {
   return isRecord(value)
     && typeof value.id === 'string'
+    && typeof value.channelId === 'string'
+    && normalizeCommunityChannelId(value.channelId) === value.channelId
     && typeof value.clientId === 'string'
     && typeof value.displayName === 'string'
     && typeof value.handle === 'string'

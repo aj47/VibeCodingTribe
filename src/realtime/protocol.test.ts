@@ -14,7 +14,7 @@ describe('realtime protocol', () => {
       message: { id: 'rt_client_12345678_1', text: '  hello room  ' },
     })).toEqual({
       type: 'send',
-      message: { id: 'rt_client_12345678_1', text: 'hello room' },
+      message: { id: 'rt_client_12345678_1', channelId: 'general', text: 'hello room' },
     })
   })
 
@@ -24,11 +24,13 @@ describe('realtime protocol', () => {
       type: 'send',
       message: { id: 'rt_client_12345678_2', text: 'x'.repeat(MAX_REALTIME_MESSAGE_LENGTH + 1) },
     })).toBeNull()
+    expect(parseRealtimeClientEvent({ type: 'send', message: { id: 'rt_client_12345678_3', channelId: 'private', text: 'secret' } })).toBeNull()
   })
 
   it('accepts idempotent like state changes and rejects malformed targets', () => {
     expect(parseRealtimeClientEvent({ type: 'set_like', messageId: 'rt_message_12345678', liked: true })).toEqual({
       type: 'set_like',
+      channelId: 'general',
       messageId: 'rt_message_12345678',
       liked: true,
     })
@@ -40,6 +42,7 @@ describe('realtime protocol', () => {
     expect(parseRealtimeClientEvent({
       type: 'send',
       message: {
+        channelId: 'general',
         id: 'rt_client_12345678_post',
         text: 'The onboarding is ready for another pair of eyes.',
         intent: 'needs_feedback',
@@ -49,6 +52,7 @@ describe('realtime protocol', () => {
     })).toEqual({
       type: 'send',
       message: {
+        channelId: 'general',
         id: 'rt_client_12345678_post',
         text: 'The onboarding is ready for another pair of eyes.',
         intent: 'needs_feedback',
@@ -72,7 +76,7 @@ describe('realtime protocol', () => {
     expect(parseRealtimeClientEvent({
       type: 'send',
       message: { id: 'rt_client_12345678_image', text: '', imageUrl: 'https://media.example/pasted.png' },
-    })).toEqual({ type: 'send', message: { id: 'rt_client_12345678_image', text: '', imageUrl: 'https://media.example/pasted.png' } })
+    })).toEqual({ type: 'send', message: { id: 'rt_client_12345678_image', channelId: 'general', text: '', imageUrl: 'https://media.example/pasted.png' } })
     expect(parseRealtimeClientEvent({
       type: 'send',
       message: { id: 'rt_client_12345678_badimage', text: '', imageUrl: 'javascript:alert(1)' },
@@ -82,6 +86,7 @@ describe('realtime protocol', () => {
   it('accepts a complete server snapshot', () => {
     const message = {
       id: 'rt_client_12345678_3',
+      channelId: 'general',
       clientId: 'client_12345678',
       displayName: 'Local Builder',
       handle: 'local-builder',

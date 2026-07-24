@@ -12,10 +12,10 @@ const profile: RealtimeProfile = {
 }
 
 const messages: RealtimeMessageRecord[] = [
-  { ...profile, id: 'chat_12345678', text: 'Anyone building tonight?', sentAt: '2026-07-21T18:00:00.000Z', intent: 'chat' },
-  { ...profile, id: 'showcase_12345678', text: 'I shipped the new onboarding.', sentAt: '2026-07-21T18:01:00.000Z', intent: 'showcase', buildName: 'Launchpad' },
-  { ...profile, id: 'feedback_12345678', text: 'Does this value proposition make sense?', sentAt: '2026-07-21T18:02:00.000Z', intent: 'needs_feedback' },
-  { ...profile, id: 'reply_12345678', text: 'The second line is very clear.', sentAt: '2026-07-21T18:03:00.000Z', parentId: 'feedback_12345678', commentKind: 'feedback' },
+  { ...profile, id: 'chat_12345678', channelId: 'general', text: 'Anyone building tonight?', sentAt: '2026-07-21T18:00:00.000Z', intent: 'chat' },
+  { ...profile, id: 'showcase_12345678', channelId: 'general', text: 'I shipped the new onboarding.', sentAt: '2026-07-21T18:01:00.000Z', intent: 'showcase', buildName: 'Launchpad' },
+  { ...profile, id: 'feedback_12345678', channelId: 'general', text: 'Does this value proposition make sense?', sentAt: '2026-07-21T18:02:00.000Z', intent: 'needs_feedback' },
+  { ...profile, id: 'reply_12345678', channelId: 'general', text: 'The second line is very clear.', sentAt: '2026-07-21T18:03:00.000Z', parentId: 'feedback_12345678', commentKind: 'feedback' },
 ]
 
 const noop = vi.fn()

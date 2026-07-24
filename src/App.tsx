@@ -26,6 +26,7 @@ import {
 } from './services/realtime'
 import { mergeRealtimeProfiles } from './realtime/participants'
 import type { CommunityPostInput } from './community/types'
+import { channelFromPath, channelPath, DEFAULT_CHANNEL_ID } from './community/channels'
 import { uploadCommunityImage } from './services/media'
 
 type Surface = 'home' | 'community' | 'invite-agent' | 'profile' | 'authorize-agent'
@@ -68,6 +69,7 @@ export function App() {
   const realtimeClientRef = useRef<RealtimeRoomClient | null>(null)
   const profileBackRef = useRef<Surface>('community')
   const canPost = Boolean(authSession) || localPreview
+  const channelId = channelFromPath(window.location.pathname)
 
   useEffect(() => {
     for (const key of LEGACY_STORAGE_KEYS) window.localStorage.removeItem(key)
@@ -160,6 +162,9 @@ export function App() {
   useEffect(() => {
     if (surface !== 'community' || authChecking) return
     const activeSessionToken = authSession ? (getSessionToken() ?? sessionToken ?? undefined) : undefined
+    setMessages([])
+    setOnlineProfiles([])
+    setOnlineCount(0)
     const client = new RealtimeRoomClient(profile, {
       onStatus: setConnectionStatus,
       onEvent: (event) => {
@@ -184,14 +189,14 @@ export function App() {
         }
         // The feed keeps optimistic posts visible; reconnecting retries them from the durable outbox.
       },
-    }, undefined, activeSessionToken, canPost)
+    }, undefined, activeSessionToken, canPost, channelId)
     realtimeClientRef.current = client
     client.connect()
     return () => {
       client.disconnect()
       if (realtimeClientRef.current === client) realtimeClientRef.current = null
     }
-  }, [authChecking, authSession, canPost, profile, rememberMessageAuthors, rememberProfiles, sessionToken, surface])
+  }, [authChecking, authSession, canPost, channelId, profile, rememberMessageAuthors, rememberProfiles, sessionToken, surface])
 
   const participants = useMemo(() => {
     const onlineIds = new Set(onlineProfiles.map((item) => item.clientId))
@@ -203,11 +208,13 @@ export function App() {
   const sendMessage = useCallback((value: string | CommunityPostInput) => {
     if (!canPost) return
     const input = typeof value === 'string' ? { text: value } : value
+    const messageChannelId = input.channelId ?? channelId ?? DEFAULT_CHANNEL_ID
     const text = input.text.trim().slice(0, MAX_REALTIME_MESSAGE_LENGTH)
     if (!text && !input.imageUrl) return
     const id = createRealtimeMessageId(profile.clientId)
     const optimisticMessage: RealtimeMessageRecord = {
       id,
+      channelId: messageChannelId,
       clientId: profile.clientId,
       displayName: profile.displayName,
       handle: profile.handle,
@@ -228,6 +235,7 @@ export function App() {
     setMessages((current) => mergeMessages(current, [optimisticMessage]))
     realtimeClientRef.current?.send({
       id,
+      channelId: messageChannelId,
       text,
       ...(input.intent ? { intent: input.intent } : {}),
       ...(input.parentId ? { parentId: input.parentId } : {}),
@@ -236,7 +244,7 @@ export function App() {
       ...(input.buildUrl ? { buildUrl: input.buildUrl } : {}),
       ...(input.imageUrl ? { imageUrl: input.imageUrl } : {}),
     })
-  }, [canPost, profile])
+  }, [canPost, channelId, profile])
 
   const toggleLike = useCallback((messageId: string, liked: boolean) => {
     if (!canPost) return
@@ -260,17 +268,17 @@ export function App() {
   }
 
   const openHome = () => {
-    window.history.pushState({}, '', '/')
+    window.history.pushState({}, '', channelPath('general'))
     setSurface('community')
   }
 
   const openRoom = () => {
-    window.history.pushState({}, '', '/')
+    window.history.pushState({}, '', channelPath('general'))
     setSurface('community')
   }
 
   const openMissions = () => {
-    window.history.pushState({}, '', '/missions')
+    window.history.pushState({}, '', channelPath('feedback'))
     setSurface('community')
   }
 
@@ -354,7 +362,7 @@ export function App() {
       onSend={sendMessage}
       onToggleLike={toggleLike}
       onUploadImage={uploadCommunityImage}
-      missionsOnly={window.location.pathname === '/missions'}
+      missionsOnly={channelId === 'feedback'}
       onSignIn={(provider) => {
         setAuthPendingProvider(provider)
         beginOAuth(provider, window.location.pathname)

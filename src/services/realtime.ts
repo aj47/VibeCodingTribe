@@ -8,6 +8,7 @@ import {
   type RealtimeProfile,
   type RealtimeServerEvent,
 } from '../realtime/protocol'
+import { DEFAULT_CHANNEL_ID, normalizeCommunityChannelId, type CommunityChannelId } from '../community/channels'
 
 export type RealtimeConnectionStatus = 'connected' | 'syncing' | 'offline'
 
@@ -74,7 +75,7 @@ export function createRealtimeMessageId(clientId: string) {
   return `rt_${clientId}_${Date.now()}_${messageSequence}`
 }
 
-export function realtimeWebSocketUrl(profile: RealtimeProfile) {
+export function realtimeWebSocketUrl(profile: RealtimeProfile, channelId: CommunityChannelId = DEFAULT_CHANNEL_ID) {
   const configured = import.meta.env.VITE_REALTIME_ORIGIN?.trim()
   const isLocal = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
   const origin = configured || (isLocal ? 'http://localhost:8787' : PRODUCTION_ORIGIN)
@@ -83,6 +84,7 @@ export function realtimeWebSocketUrl(profile: RealtimeProfile) {
   url.searchParams.set('clientId', profile.clientId)
   url.searchParams.set('displayName', profile.displayName)
   url.searchParams.set('handle', profile.handle)
+  url.searchParams.set('channelId', channelId)
   url.searchParams.set('avatarColor', profile.avatarColor)
   if (profile.avatarUrl) url.searchParams.set('avatarUrl', profile.avatarUrl)
   return url.toString()
@@ -93,7 +95,7 @@ export class RealtimeRoomClient {
   private reconnectTimer: number | undefined
   private reconnectAttempt = 0
   private stopped = true
-  private outbox: RealtimeSendEvent['message'][] = this.loadOutbox()
+  private outbox: RealtimeSendEvent['message'][]
   private pendingLikes = new Map<string, boolean>()
 
   constructor(
@@ -102,7 +104,10 @@ export class RealtimeRoomClient {
     private readonly socketFactory: SocketFactory = (url, protocols) => new WebSocket(url, protocols),
     private readonly sessionToken?: string,
     private readonly canSend = true,
-  ) {}
+    private readonly channelId: CommunityChannelId = DEFAULT_CHANNEL_ID,
+  ) {
+    this.outbox = this.loadOutbox()
+  }
 
   connect() {
     this.stopped = false
@@ -118,7 +123,8 @@ export class RealtimeRoomClient {
 
   send(message: RealtimeSendEvent['message']) {
     if (!this.canSend) return
-    if (!this.outbox.some((item) => item.id === message.id)) this.outbox.push(message)
+    const channelMessage = { ...message, channelId: normalizeCommunityChannelId(message.channelId || this.channelId) }
+    if (!this.outbox.some((item) => item.id === channelMessage.id)) this.outbox.push(channelMessage)
     this.persistOutbox()
     this.flushOutbox()
   }
@@ -137,7 +143,7 @@ export class RealtimeRoomClient {
     }
     this.handlers.onStatus(this.reconnectAttempt === 0 ? 'syncing' : 'offline')
     const protocols = this.sessionToken ? ['vct-realtime', `vct.auth.${this.sessionToken}`] : undefined
-    const socket = this.socketFactory(realtimeWebSocketUrl(this.profile), protocols)
+    const socket = this.socketFactory(realtimeWebSocketUrl(this.profile, this.channelId), protocols)
     this.socket = socket
     socket.addEventListener('open', () => {
       if (socket !== this.socket) return
@@ -151,6 +157,7 @@ export class RealtimeRoomClient {
         const parsed = parseRealtimeServerEvent(JSON.parse(event.data))
         if (!parsed) return
         if (parsed.type === 'message') {
+          if (parsed.message.channelId !== this.channelId) return
           this.outbox = this.outbox.filter((item) => item.id !== parsed.message.id)
           const pendingLike = this.pendingLikes.get(parsed.message.id)
           if (pendingLike === parsed.message.likedByClientIds?.includes(this.profile.clientId)) {
@@ -158,6 +165,7 @@ export class RealtimeRoomClient {
           }
           this.persistOutbox()
         }
+        if (parsed.type === 'snapshot' && parsed.messages.some((message) => message.channelId !== this.channelId)) return
         this.handlers.onEvent(parsed)
       } catch {
         // Ignore malformed server events and retain the connection.
@@ -181,13 +189,13 @@ export class RealtimeRoomClient {
       this.socket.send(JSON.stringify({ type: 'send', message } satisfies RealtimeClientEvent))
     }
     for (const [messageId, liked] of this.pendingLikes) {
-      this.socket.send(JSON.stringify({ type: 'set_like', messageId, liked } satisfies RealtimeClientEvent))
+      this.socket.send(JSON.stringify({ type: 'set_like', channelId: this.channelId, messageId, liked } satisfies RealtimeClientEvent))
     }
   }
 
   private loadOutbox() {
     try {
-      const saved = storage()?.getItem(OUTBOX_KEY)
+      const saved = storage()?.getItem(`${OUTBOX_KEY}:${this.channelId}`)
       const parsed = saved ? JSON.parse(saved) : []
       return Array.isArray(parsed) ? parsed.slice(-50) as RealtimeSendEvent['message'][] : []
     } catch {
@@ -196,6 +204,6 @@ export class RealtimeRoomClient {
   }
 
   private persistOutbox() {
-    storage()?.setItem(OUTBOX_KEY, JSON.stringify(this.outbox.slice(-50)))
+    storage()?.setItem(`${OUTBOX_KEY}:${this.channelId}`, JSON.stringify(this.outbox.slice(-50)))
   }
 }

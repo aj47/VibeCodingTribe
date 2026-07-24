@@ -9,7 +9,7 @@ describe('public room access', () => {
       AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
       SESSION_SECRET: 'test-session-secret-that-is-long-enough',
       LIVE_ROOM: {
-        idFromName: vi.fn(() => 'room-id'),
+      idFromName: vi.fn((name: string) => name),
         get: vi.fn(() => ({ fetch: roomFetch })),
       },
     }
@@ -22,7 +22,39 @@ describe('public room access', () => {
 
     expect(response.status).toBe(200)
     expect(forwardedUrl.searchParams.get('canSend')).toBe('false')
+    expect(env.LIVE_ROOM.idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/general')
     expect(roomFetch).toHaveBeenCalledOnce()
+  })
+
+  it('routes each public connection to its isolated channel room', async () => {
+    const roomFetch = vi.fn((request: Request) => Response.json({ url: request.url }))
+    const idFromName = vi.fn((name: string) => name)
+    const env = {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+      LIVE_ROOM: { idFromName, get: vi.fn(() => ({ fetch: roomFetch })) },
+    }
+
+    const response = await worker.fetch(new Request('https://worker.example/api/realtime?channelId=feedback&clientId=viewer_12345678&displayName=Viewer&handle=viewer&avatarColor=%23657c54'), env as never)
+    const forwardedUrl = new URL((await response.json() as { url: string }).url)
+
+    expect(response.status).toBe(200)
+    expect(idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/feedback')
+    expect(forwardedUrl.searchParams.get('channelId')).toBe('feedback')
+  })
+
+  it('rejects unknown channel ids before opening a room', async () => {
+    const idFromName = vi.fn()
+    const env = {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+      LIVE_ROOM: { idFromName, get: vi.fn() },
+    }
+
+    const response = await worker.fetch(new Request('https://worker.example/api/realtime?channelId=secret'), env as never)
+
+    expect(response.status).toBe(400)
+    expect(idFromName).not.toHaveBeenCalled()
   })
 
   it('rejects forged local demo identities', async () => {

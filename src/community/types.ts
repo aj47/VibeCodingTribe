@@ -1,7 +1,10 @@
+import type { CommunityChannelId } from './channels'
+
 export type CommunityPostIntent = 'chat' | 'showcase' | 'needs_feedback' | 'update' | 'question'
 
 export interface CommunityPostInput {
   text: string
+  channelId?: CommunityChannelId
   intent?: CommunityPostIntent
   parentId?: string
   commentKind?: 'reply' | 'feedback'

@@ -14,6 +14,7 @@ const owner: RealtimeProfile = {
 
 const agentMessage: RealtimeMessageRecord = {
   id: 'agent-message-1',
+  channelId: 'general',
   clientId: 'agent_12345678',
   displayName: 'Scout',
   handle: 'scout',
