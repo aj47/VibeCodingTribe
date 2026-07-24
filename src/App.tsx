@@ -63,6 +63,7 @@ export function App() {
   const [authError] = useState(authErrorFromLocation)
   const [localPreview, setLocalPreview] = useState(() => import.meta.env.DEV && window.sessionStorage.getItem('vct-community-preview-v1') === 'true')
   const [profile, setProfile] = useState<RealtimeProfile>(loadRealtimeProfile)
+  const [, setRouteVersion] = useState(0)
   const [readState, setReadState] = useState<LocalReadState>(() => loadLocalReadState(profile.clientId))
   const [channelActivity, setChannelActivity] = useState<ChannelActivityMap>(() => Object.fromEntries(Object.entries(loadLocalChannelActivity(profile.clientId)).map(([id, latestActivity]) => [id, { latestActivity }])) as ChannelActivityMap)
   const [messages, setMessages] = useState<RealtimeMessageRecord[]>([])
@@ -116,7 +117,10 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    const handlePopState = () => setSurface(loadSurface())
+    const handlePopState = () => {
+      setRouteVersion((current) => current + 1)
+      setSurface(loadSurface())
+    }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
@@ -313,26 +317,31 @@ export function App() {
 
   const openHome = () => {
     window.history.pushState({}, '', channelPath('general'))
+    setRouteVersion((current) => current + 1)
     setSurface('community')
   }
 
   const openRoom = () => {
     window.history.pushState({}, '', channelPath('general'))
+    setRouteVersion((current) => current + 1)
     setSurface('community')
   }
 
   const openMissions = () => {
     window.history.pushState({}, '', channelPath('feedback'))
+    setRouteVersion((current) => current + 1)
     setSurface('community')
   }
 
   const openChannel = (targetChannelId: CommunityChannelId) => {
     window.history.pushState({}, '', channelPath(targetChannelId))
+    setRouteVersion((current) => current + 1)
     setSurface('community')
   }
 
   const openThread = (targetChannelId: CommunityChannelId, parentId: string) => {
     window.history.pushState({}, '', `${channelPath(targetChannelId)}?thread=${encodeURIComponent(parentId)}`)
+    setRouteVersion((current) => current + 1)
     setSurface('community')
   }
 
@@ -348,12 +357,21 @@ export function App() {
   const openOwnProfile = () => {
     profileBackRef.current = surface
     window.history.pushState({}, '', '/settings/profile')
+    setRouteVersion((current) => current + 1)
+    setSurface('profile')
+  }
+
+  const openBadges = () => {
+    profileBackRef.current = surface
+    window.history.pushState({}, '', '/badges')
+    setRouteVersion((current) => current + 1)
     setSurface('profile')
   }
 
   const openPublicProfile = (profileId: string) => {
     profileBackRef.current = 'community'
     window.history.pushState({}, '', `/p/${encodeURIComponent(profileId)}`)
+    setRouteVersion((current) => current + 1)
     setSurface('profile')
   }
 
@@ -396,7 +414,7 @@ export function App() {
 
   if (surface === 'profile') {
     const pathProfileId = window.location.pathname.startsWith('/p/') ? decodeURIComponent(window.location.pathname.slice(3)) : undefined
-    return <ProfilePage session={authSession} profileId={pathProfileId} onBack={backFromProfile} onSignIn={() => {
+    return <ProfilePage session={authSession} profileId={pathProfileId} badgesOnly={window.location.pathname === '/badges'} onBack={backFromProfile} onSignIn={() => {
       setAuthPendingProvider('github')
       beginOAuth('github', window.location.pathname)
     }} />
@@ -447,6 +465,7 @@ export function App() {
       onReadThread={onReadThread}
       onOpenProfile={openPublicProfile}
       onOpenOwnProfile={openOwnProfile}
+      onOpenBadges={openBadges}
     />
   )
 }

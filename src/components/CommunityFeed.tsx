@@ -64,6 +64,7 @@ interface CommunityFeedProps {
   onReadThread: (channelId: CommunityChannelId, parentId: string, activityAt: string) => void
   onOpenProfile: (profileId: string) => void
   onOpenOwnProfile: () => void
+  onOpenBadges: () => void
   onInviteAgent: () => void
 }
 
@@ -141,6 +142,7 @@ export function CommunityFeed({
   onReadThread,
   onOpenProfile,
   onOpenOwnProfile,
+  onOpenBadges,
   onInviteAgent,
 }: CommunityFeedProps) {
   const [draft, setDraft] = useState('')
@@ -331,7 +333,7 @@ export function CommunityFeed({
         <nav aria-label="Explore">
           <button type="button" onClick={onOpenFeed}><Sparkles size={15} /> Latest builds</button>
           <button type="button" onClick={onOpenMissions}><Radio size={15} /> Needs feedback</button>
-          <button type="button" onClick={onOpenOwnProfile}><BadgeCheck size={15} /> Your badges</button>
+          <button type="button" onClick={onOpenBadges}><BadgeCheck size={15} /> Your badges</button>
           <button type="button" onClick={onInviteAgent}><Bot size={15} /> Agent access</button>
         </nav>
       </aside>

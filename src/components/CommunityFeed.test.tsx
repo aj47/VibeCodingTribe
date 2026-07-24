@@ -30,6 +30,8 @@ describe('CommunityFeed post hierarchy', () => {
   })
 
   it('separates chat, showcases, feedback requests, replies, and feedback', () => {
+    const onOpenChannel = vi.fn()
+    const onOpenBadges = vi.fn()
     const { container } = render(<CommunityFeed
       profile={profile}
       provider="github"
@@ -50,11 +52,12 @@ describe('CommunityFeed post hierarchy', () => {
       onSignOut={noop}
       onOpenFeed={noop}
       onOpenMissions={noop}
-      onOpenChannel={noop}
+      onOpenChannel={onOpenChannel}
       onOpenThread={noop}
       onReadThread={noop}
       onOpenProfile={noop}
       onOpenOwnProfile={noop}
+      onOpenBadges={onOpenBadges}
       onInviteAgent={noop}
     />)
 
@@ -67,6 +70,10 @@ describe('CommunityFeed post hierarchy', () => {
     expect(within(feedbackPost as HTMLElement).getByText('Feedback request')).toBeInTheDocument()
     expect(within(feedbackPost as HTMLElement).getByText('Feedback', { selector: 'em' })).toBeInTheDocument()
     expect(within(feedbackPost as HTMLElement).getByRole('button', { name: /1 response/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /ShowcasesProgress, launches, and builds in public/ }))
+    expect(onOpenChannel).toHaveBeenCalledWith('showcases')
+    fireEvent.click(screen.getByRole('button', { name: 'Your badges' }))
+    expect(onOpenBadges).toHaveBeenCalledOnce()
   })
 
   it('accepts an image pasted into the composer and publishes an image-only post', async () => {
@@ -97,6 +104,7 @@ describe('CommunityFeed post hierarchy', () => {
       onReadThread={noop}
       onOpenProfile={noop}
       onOpenOwnProfile={noop}
+      onOpenBadges={noop}
       onInviteAgent={noop}
     />)
     const file = new File(['image-bytes'], 'clipboard.png', { type: 'image/png' })
@@ -145,6 +153,7 @@ describe('CommunityFeed post hierarchy', () => {
       onReadThread={noop}
       onOpenProfile={noop}
       onOpenOwnProfile={noop}
+      onOpenBadges={noop}
       onInviteAgent={noop}
     />)
 

@@ -6,6 +6,7 @@ import { beginLinkOAuth, loadOwnProfile, loadPublicProfile, updateOwnProfile } f
 interface ProfilePageProps {
   session: AuthSession | null
   profileId?: string
+  badgesOnly?: boolean
   onBack: () => void
   onSignIn: () => void
 }
@@ -19,7 +20,7 @@ const BADGES = [
   { id: 'community_helper', name: 'Community Helper', description: 'Gave feedback builders marked useful.', icon: ShieldCheck },
 ] as const
 
-export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePageProps) {
+export function ProfilePage({ session, profileId, badgesOnly = false, onBack, onSignIn }: ProfilePageProps) {
   const ownProfile = !profileId || profileId === session?.user.id
   const [profile, setProfile] = useState<PublicProfile | null>(null)
   const [draft, setDraft] = useState({ displayName: '', headline: '', bio: '', githubUrl: '', linkedinUrl: '', websiteUrl: '' })
@@ -74,7 +75,7 @@ export function ProfilePage({ session, profileId, onBack, onSignIn }: ProfilePag
       {agentProfile ? <div className="public-profile-links public-agent-profile">
         <p>This agent has its own public identity. Every action remains accountable to <strong>{agentProfile.owner.displayName}</strong> · @{agentProfile.owner.handle}.</p>
         <small>Agent avatars and names are supplied by the connected agent during enrollment.</small>
-      </div> : humanProfile && ownProfile ? <><form onSubmit={submit}>
+      </div> : humanProfile && ownProfile && badgesOnly ? <BadgeCollection profile={humanProfile} /> : humanProfile && ownProfile ? <><form onSubmit={submit}>
         <div className="profile-field"><label htmlFor="profile-name">Display name</label><input id="profile-name" required maxLength={40} value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} /></div>
         <div className="profile-field"><label htmlFor="profile-headline">Headline</label><input id="profile-headline" maxLength={120} placeholder="What are you building?" value={draft.headline} onChange={(event) => setDraft({ ...draft, headline: event.target.value })} /></div>
         <div className="profile-field profile-field--bio"><label htmlFor="profile-bio">About your work</label><textarea id="profile-bio" maxLength={320} placeholder="What do you build, explore, or want help with?" value={draft.bio} onChange={(event) => setDraft({ ...draft, bio: event.target.value })} /></div>
