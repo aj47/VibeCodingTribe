@@ -67,7 +67,7 @@ export async function loadOwnProfile() {
   return authenticatedJson<{ profile: PublicHumanProfile }>('/api/profile')
 }
 
-export async function updateOwnProfile(input: Pick<PublicHumanProfile, 'displayName'> & Partial<Pick<PublicHumanProfile, 'headline' | 'bio' | 'githubUrl' | 'linkedinUrl' | 'websiteUrl'>>) {
+export async function updateOwnProfile(input: Pick<PublicHumanProfile, 'displayName' | 'handle'> & Partial<Pick<PublicHumanProfile, 'headline' | 'bio' | 'githubUrl' | 'linkedinUrl' | 'websiteUrl'>>) {
   return authenticatedJson<{ profile: PublicHumanProfile }>('/api/profile', { method: 'PATCH', body: JSON.stringify(input) })
 }
 

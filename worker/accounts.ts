@@ -1,4 +1,5 @@
 import type { AuthProvider, ProfileBadgeAward, PublicAgentProfile, PublicHumanProfile } from '../src/auth/types'
+import { normalizeHandle } from '../src/realtime/protocol'
 
 export interface AccountIdentity {
   provider: AuthProvider
@@ -86,6 +87,7 @@ async function realtimeId(accountId: string) {
 }
 
 function publicProfile(account: HumanAccount): PublicHumanProfile {
+  const linkedinUrl = account.linkedinUrl || identityProfileUrl(account, 'linkedin')
   return {
     id: account.id,
     displayName: account.displayName,
@@ -95,11 +97,16 @@ function publicProfile(account: HumanAccount): PublicHumanProfile {
     ...(account.headline ? { headline: account.headline } : {}),
     ...(account.bio ? { bio: account.bio } : {}),
     ...(account.githubUrl ? { githubUrl: account.githubUrl } : {}),
-    ...(account.linkedinUrl ? { linkedinUrl: account.linkedinUrl } : {}),
+    ...(linkedinUrl ? { linkedinUrl } : {}),
     ...(account.websiteUrl ? { websiteUrl: account.websiteUrl } : {}),
     badges: account.badges ?? [{ id: 'early_builder', awardedAt: account.createdAt, source: 'automatic' }],
     linkedProviders: account.linkedProviders,
   }
+}
+
+function identityProfileUrl(account: HumanAccount, provider: AuthProvider) {
+  const identity = [...account.identities].reverse().find((item) => item.provider === provider)
+  return validProfileUrl(identity?.profileUrl, provider) ?? undefined
 }
 
 function credentialSummary(credential: AgentCredentialRecord) {
@@ -138,6 +145,13 @@ function validProfileUrl(value: unknown, provider: AuthProvider) {
   } catch {
     return null
   }
+}
+
+function validHumanHandle(value: unknown) {
+  if (typeof value !== 'string') return null
+  const raw = value.trim().replace(/^@/, '')
+  if (!/^[a-zA-Z0-9_-]{2,32}$/.test(raw)) return null
+  return normalizeHandle(raw).toLowerCase()
 }
 
 function validWebsiteUrl(value: unknown) {
@@ -200,6 +214,9 @@ export class AccountStore implements DurableObject {
   private async resolveIdentity(body: Record<string, unknown> | null) {
     const identity = body?.identity as AccountIdentity | undefined
     if (!identity || !['github', 'linkedin'].includes(identity.provider) || !identity.subject || !identity.displayName) return json({ error: 'Invalid identity' }, 400)
+    const profileUrl = validProfileUrl(identity.profileUrl, identity.provider)
+    const storedIdentity: AccountIdentity = { ...identity, ...(profileUrl ? { profileUrl } : {}) }
+    if (!profileUrl) delete storedIdentity.profileUrl
     const identityKey = `${IDENTITY_PREFIX}${identity.provider}:${identity.subject}`
     const requestedAccountId = typeof body?.accountId === 'string' ? body.accountId : undefined
     const existingAccountId = await this.state.storage.get<string>(identityKey)
@@ -216,10 +233,10 @@ export class AccountStore implements DurableObject {
         realtimeClientId: await realtimeId(accountId),
         ...(identity.avatarUrl ? { avatarUrl: identity.avatarUrl } : {}),
         ...(identity.email ? { email: identity.email } : {}),
-        ...(identity.provider === 'github' && identity.profileUrl ? { githubUrl: identity.profileUrl } : {}),
-        ...(identity.provider === 'linkedin' && identity.profileUrl ? { linkedinUrl: identity.profileUrl } : {}),
+        ...(identity.provider === 'github' && profileUrl ? { githubUrl: profileUrl } : {}),
+        ...(identity.provider === 'linkedin' && profileUrl ? { linkedinUrl: profileUrl } : {}),
         linkedProviders: [identity.provider],
-        identities: [identity],
+        identities: [storedIdentity],
         agentCredentialIds: [],
         badges: [{ id: 'early_builder', awardedAt: now, source: 'automatic' }],
         createdAt: now,
@@ -227,15 +244,15 @@ export class AccountStore implements DurableObject {
       }
     } else {
       const identities = account.identities.filter((item) => !(item.provider === identity.provider && item.subject === identity.subject))
-      identities.push(identity)
+      identities.push(storedIdentity)
       account = {
         ...account,
         identities,
         linkedProviders: [...new Set(identities.map((item) => item.provider))],
         ...(!account.avatarUrl && identity.avatarUrl ? { avatarUrl: identity.avatarUrl } : {}),
         ...(!account.email && identity.email ? { email: identity.email } : {}),
-        ...(!account.githubUrl && identity.provider === 'github' && identity.profileUrl ? { githubUrl: identity.profileUrl } : {}),
-        ...(!account.linkedinUrl && identity.provider === 'linkedin' && identity.profileUrl ? { linkedinUrl: identity.profileUrl } : {}),
+        ...(!account.githubUrl && identity.provider === 'github' && profileUrl ? { githubUrl: profileUrl } : {}),
+        ...(!account.linkedinUrl && identity.provider === 'linkedin' && profileUrl ? { linkedinUrl: profileUrl } : {}),
         updatedAt: now,
       }
     }
@@ -290,9 +307,17 @@ export class AccountStore implements DurableObject {
     const headline = safeString(body?.headline, 120)
     const bio = safeString(body?.bio, 320)
     if (!displayName) return json({ error: 'Display name is required' }, 400)
+    const handle = body?.handle === undefined ? account.handle : validHumanHandle(body.handle)
+    if (!handle) return json({ error: 'Handle must be 2–32 letters, numbers, hyphens, or underscores.' }, 400)
+    if (handle !== account.handle.toLowerCase()) {
+      const accounts = await this.state.storage.list<HumanAccount>({ prefix: ACCOUNT_PREFIX })
+      const unavailable = [...accounts.values()].some((candidate) => candidate.id !== account.id && candidate.handle.toLowerCase() === handle)
+      if (unavailable) return json({ error: `@${handle} is already taken. Choose another handle.` }, 409)
+    }
     const updated: HumanAccount = {
       ...account,
       displayName,
+      handle,
       headline,
       bio,
       githubUrl,

@@ -5,6 +5,9 @@ function createStore() {
   const values = new Map<string, unknown>()
   const storage = {
     get: async (key: string) => values.get(key),
+    list: async <T,>({ prefix }: { prefix?: string }) => new Map(
+      [...values.entries()].filter(([key]) => !prefix || key.startsWith(prefix)),
+    ) as Map<string, T>,
     put: async (keyOrEntries: string | Record<string, unknown>, value?: unknown) => {
       if (typeof keyOrEntries === 'string') values.set(keyOrEntries, value)
       else for (const [key, entry] of Object.entries(keyOrEntries)) values.set(key, entry)
@@ -31,13 +34,14 @@ describe('AccountStore', () => {
     const { account } = await github.json() as { account: { id: string } }
 
     const linkedin = await store.fetch(request('/identity/resolve', { accountId: account.id, identity: {
-      provider: 'linkedin', subject: 'li-1', displayName: 'Ada Builder', handle: 'ada-li',
+      provider: 'linkedin', subject: 'li-1', displayName: 'Ada Builder', handle: 'ada-li', profileUrl: 'https://www.linkedin.com/in/ada-builder',
     } }))
-    const result = await linkedin.json() as { profile: { id: string; linkedProviders: string[]; githubUrl?: string } }
+    const result = await linkedin.json() as { profile: { id: string; linkedProviders: string[]; githubUrl?: string; linkedinUrl?: string } }
 
     expect(result.profile.id).toBe(account.id)
     expect(result.profile.linkedProviders).toEqual(['github', 'linkedin'])
     expect(result.profile.githubUrl).toBe('https://github.com/ada')
+    expect(result.profile.linkedinUrl).toBe('https://www.linkedin.com/in/ada-builder')
   })
 
   it('delivers a key once, rate limits it, and revokes it', async () => {
@@ -132,5 +136,30 @@ describe('AccountStore', () => {
       websiteUrl: 'https://builder.example/',
       badges: [{ id: 'early_builder' }],
     })
+  })
+
+  it('validates handles and rejects duplicates while allowing a unique update', async () => {
+    const store = createStore()
+    const firstResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-first', displayName: 'First Builder', handle: 'first-builder',
+    } }))
+    const { account: first } = await firstResponse.json() as { account: { id: string } }
+    const secondResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-second', displayName: 'Second Builder', handle: 'second-builder',
+    } }))
+    const { account: second } = await secondResponse.json() as { account: { id: string } }
+
+    const duplicate = await store.fetch(request('/profile', {
+      accountId: second.id, displayName: 'Second Builder', handle: '@first-builder',
+    }, 'PATCH'))
+    expect(duplicate.status).toBe(409)
+    expect(await duplicate.json()).toEqual({ error: '@first-builder is already taken. Choose another handle.' })
+
+    const updated = await store.fetch(request('/profile', {
+      accountId: second.id, displayName: 'Second Builder', handle: 'second-builder-v2',
+    }, 'PATCH'))
+    expect(updated.status).toBe(200)
+    expect((await updated.json() as { profile: { handle: string } }).profile.handle).toBe('second-builder-v2')
+    expect(first.id).not.toBe(second.id)
   })
 })

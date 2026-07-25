@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { handleAuthRequest, type AuthEnv } from './auth'
+import { handleAuthRequest, linkedinProfileUrlFromClaims, type AuthEnv } from './auth'
 
 const env: AuthEnv = {
   ALLOWED_ORIGINS: 'http://localhost:4173,https://vibecodingtribe.com',
@@ -12,6 +12,12 @@ const env: AuthEnv = {
 }
 
 describe('OAuth routes', () => {
+  it('turns available LinkedIn profile claims into a valid editable URL', () => {
+    expect(linkedinProfileUrlFromClaims({ vanityName: 'ada-builder' })).toBe('https://www.linkedin.com/in/ada-builder')
+    expect(linkedinProfileUrlFromClaims({ profile_url: 'https://www.linkedin.com/in/ada-builder' })).toBe('https://www.linkedin.com/in/ada-builder')
+    expect(linkedinProfileUrlFromClaims({ profile_url: 'https://example.com/not-linkedin' })).toBeUndefined()
+  })
+
   it('starts GitHub sign-in with state, PKCE, and identity-only scope', async () => {
     const response = await handleAuthRequest(
       new Request('https://worker.example/auth/github?returnTo=/r/general'),

@@ -212,6 +212,35 @@ interface ProviderIdentity {
   profileUrl?: string
 }
 
+export function linkedinProfileUrlFromClaims(value: { profile?: unknown; profile_url?: unknown; vanityName?: unknown; vanity_name?: unknown }) {
+  const direct = [value.profile, value.profile_url].find((candidate): candidate is string => typeof candidate === 'string')
+  if (direct) {
+    try {
+      const url = new URL(direct)
+      if (url.protocol === 'https:' && ['linkedin.com', 'www.linkedin.com'].includes(url.hostname)) return url.toString()
+    } catch {
+      // Fall through to a vanity name when the provider claim is not a URL.
+    }
+  }
+  const vanity = [value.vanityName, value.vanity_name].find((candidate): candidate is string => typeof candidate === 'string')?.trim()
+  return vanity && /^[a-zA-Z0-9-]{1,100}$/.test(vanity) ? `https://www.linkedin.com/in/${vanity}` : undefined
+}
+
+async function linkedinProfileUrl(accessToken: string, user: { profile?: unknown; profile_url?: unknown; vanityName?: unknown; vanity_name?: unknown }) {
+  const fromUserInfo = linkedinProfileUrlFromClaims(user)
+  if (fromUserInfo) return fromUserInfo
+  try {
+    const response = await fetch('https://api.linkedin.com/v2/me?projection=(vanityName)', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!response.ok) return undefined
+    const profile = await response.json() as { vanityName?: unknown; vanity_name?: unknown }
+    return linkedinProfileUrlFromClaims(profile)
+  } catch {
+    return undefined
+  }
+}
+
 async function githubIdentity(code: string, attempt: OAuthAttempt, request: Request, env: AuthEnv): Promise<ProviderIdentity> {
   const credentials = providerCredentials('github', env)
   const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
@@ -264,14 +293,16 @@ async function linkedInIdentity(code: string, request: Request, env: AuthEnv): P
   const userResponse = await fetch('https://api.linkedin.com/v2/userinfo', {
     headers: { Authorization: `Bearer ${token.access_token}` },
   })
-  const user = await userResponse.json() as { sub?: string; name?: string; picture?: string; email?: string }
+  const user = await userResponse.json() as { sub?: string; name?: string; picture?: string; email?: string; profile?: unknown; profile_url?: unknown; vanityName?: unknown; vanity_name?: unknown }
   if (!userResponse.ok || !user.sub || !user.name) throw new Error('LinkedIn profile lookup failed')
+  const profileUrl = await linkedinProfileUrl(token.access_token, user)
   return {
     subject: user.sub,
     displayName: normalizeDisplayName(user.name),
     handle: normalizeHandle(`li-${user.sub.slice(-18)}`),
     ...(user.picture ? { avatarUrl: user.picture } : {}),
     ...(user.email ? { email: user.email } : {}),
+    ...(profileUrl ? { profileUrl } : {}),
   }
 }
 
