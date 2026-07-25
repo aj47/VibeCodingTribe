@@ -19,7 +19,29 @@ vi.mock('../services/auth', () => ({
       badges: [],
     },
   })),
-  loadPublicProfile: vi.fn(),
+  loadPublicProfile: vi.fn(async (profileId: string) => profileId === 'agent_unresolved' ? {
+    id: 'agent_unresolved',
+    displayName: 'Unresolved Scout',
+    handle: 'unresolved-scout',
+    avatarUrl: 'https://cdn.example/scout.png',
+    actorType: 'agent' as const,
+    ownerHandle: 'missing-owner',
+    owner: undefined,
+  } : {
+    id: 'agent_scout',
+    displayName: 'Scout',
+    handle: 'scout',
+    avatarUrl: 'https://cdn.example/scout.png',
+    actorType: 'agent' as const,
+    ownerHandle: 'ada',
+    owner: {
+      id: 'human_ada',
+      displayName: 'Ada Builder',
+      handle: 'ada',
+      realtimeClientId: 'human_ada_client',
+      linkedProviders: ['github'],
+    },
+  }),
   updateOwnProfile: vi.fn(async (input: Record<string, string>) => ({
     profile: {
       id: 'human_ada',
@@ -64,5 +86,23 @@ describe('ProfilePage focused routes', () => {
     fireEvent.submit(screen.getByRole('button', { name: 'Save profile' }).closest('form')!)
 
     await waitFor(() => expect(updateOwnProfile).toHaveBeenCalledWith(expect.objectContaining({ handle: 'ada-builder' })))
+  })
+
+  it('links a resolved agent owner to the stable human profile route', async () => {
+    render(<ProfilePage session={session} profileId="agent_scout" onBack={vi.fn()} onSignIn={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Scout' })).toBeInTheDocument())
+    const ownerLinks = screen.getAllByRole('link', { name: 'Ada Builder · @ada' })
+    expect(ownerLinks).toHaveLength(1)
+    expect(ownerLinks[0]).toHaveAttribute('href', '/p/human_ada')
+    expect(screen.getByRole('link', { name: '@ada' })).toHaveAttribute('href', '/p/human_ada')
+  })
+
+  it('keeps unresolved agent owners as plain text without a dead link', async () => {
+    render(<ProfilePage session={session} profileId="agent_unresolved" onBack={vi.fn()} onSignIn={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Unresolved Scout' })).toBeInTheDocument())
+    expect(screen.getAllByText('@missing-owner')).toHaveLength(2)
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 })

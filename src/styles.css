@@ -428,6 +428,8 @@ a { color: inherit; text-decoration: none; }
   .community-layout { grid-template-columns: 190px minmax(480px, 720px); }
 }
 
+.profile-sheet__trust a, .public-agent-profile a { color: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }.profile-sheet__trust a:hover, .public-agent-profile a:hover { color: var(--text); }
+
 @media (max-width: 900px) {
   .community-layout { grid-template-columns: minmax(0, 720px); }
   .community-rail--left { display: none; }

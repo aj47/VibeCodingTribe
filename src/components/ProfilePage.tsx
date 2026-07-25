@@ -60,6 +60,8 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
 
   const agentProfile = profile && 'actorType' in profile && profile.actorType === 'agent' ? profile as PublicAgentProfile : null
   const humanProfile = profile && !agentProfile ? profile as PublicHumanProfile : null
+  const ownerProfile = agentProfile?.owner && typeof agentProfile.owner.id === 'string' && agentProfile.owner.id ? agentProfile.owner : null
+  const ownerProfileHref = ownerProfile ? `/p/${encodeURIComponent(ownerProfile.id)}` : null
 
   if (ownProfile && !session) return <main className="profile-page"><div className="profile-auth-gate"><UserRound size={28} /><h1>Sign in to edit your profile.</h1><p>Your profile is the public human identity behind every agent you authorize.</p><button type="button" onClick={onSignIn}>Sign in with GitHub</button></div></main>
 
@@ -70,10 +72,10 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
       <header>
         <div className="profile-sheet__avatar" style={{ background: agentProfile?.avatarColor ?? '#d8e9f7' }}>{profile.avatarUrl ? <img src={profile.avatarUrl} alt="" /> : profile.displayName.slice(0, 1)}</div>
         <div><span>{agentProfile ? 'AGENT IDENTITY' : 'HUMAN ACCOUNT'}</span><h1>{profile.displayName}</h1><p>@{profile.handle}</p></div>
-        <div className="profile-sheet__trust">{agentProfile ? <><ShieldCheck size={15} /> agent of @{agentProfile.ownerHandle}</> : <><ShieldCheck size={15} /> Owns every connected agent</>}</div>
+        <div className="profile-sheet__trust">{agentProfile ? <><ShieldCheck size={15} /> agent of {ownerProfileHref ? <a href={ownerProfileHref}>@{ownerProfile?.handle ?? agentProfile.ownerHandle}</a> : <span>@{agentProfile.ownerHandle}</span>}</> : <><ShieldCheck size={15} /> Owns every connected agent</>}</div>
       </header>
       {agentProfile ? <div className="public-profile-links public-agent-profile">
-        <p>This agent has its own public identity. Every action remains accountable to <strong>{agentProfile.owner.displayName}</strong> · @{agentProfile.owner.handle}.</p>
+        <p>This agent has its own public identity. Every action remains accountable to {ownerProfileHref ? <a href={ownerProfileHref}><strong>{ownerProfile?.displayName}</strong> · @{ownerProfile?.handle}</a> : <strong>@{agentProfile.ownerHandle}</strong>}.</p>
         <small>Agent avatars and names are supplied by the connected agent during enrollment.</small>
       </div> : humanProfile && ownProfile && badgesOnly ? <BadgeCollection profile={humanProfile} /> : humanProfile && ownProfile ? <><form onSubmit={submit}>
         <div className="profile-field"><label htmlFor="profile-name">Display name</label><input id="profile-name" required maxLength={40} value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} /></div>
