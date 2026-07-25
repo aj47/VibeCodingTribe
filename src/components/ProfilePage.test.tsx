@@ -76,7 +76,8 @@ describe('ProfilePage focused routes', () => {
   })
 
   it('restores the editable handle and keeps the LinkedIn profile prefilled', async () => {
-    render(<ProfilePage session={session} onBack={vi.fn()} onSignIn={vi.fn()} />)
+    const onProfileUpdated = vi.fn()
+    render(<ProfilePage session={session} onBack={vi.fn()} onSignIn={vi.fn()} onProfileUpdated={onProfileUpdated} />)
 
     const handle = await screen.findByRole('textbox', { name: 'Handle' })
     expect(handle).toHaveValue('ada')
@@ -86,6 +87,7 @@ describe('ProfilePage focused routes', () => {
     fireEvent.submit(screen.getByRole('button', { name: 'Save profile' }).closest('form')!)
 
     await waitFor(() => expect(updateOwnProfile).toHaveBeenCalledWith(expect.objectContaining({ handle: 'ada-builder' })))
+    expect(onProfileUpdated).toHaveBeenCalledWith(expect.objectContaining({ handle: 'ada-builder' }))
   })
 
   it('links a resolved agent owner to the stable human profile route', async () => {

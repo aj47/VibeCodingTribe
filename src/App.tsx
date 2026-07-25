@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuthProvider, AuthSession } from './auth/types'
+import type { AuthProvider, AuthSession, PublicHumanProfile } from './auth/types'
 import { AgentInvitePage } from './components/AgentInvitePage'
 import { AgentAuthorizationPage } from './components/AgentAuthorizationPage'
 import { AuthScreen } from './components/AuthScreen'
@@ -202,6 +202,31 @@ export function App() {
       ...(record.ownerProfileId ? { ownerProfileId: record.ownerProfileId } : {}),
     })))
   }, [rememberProfiles])
+
+  const onProfileUpdated = useCallback((updated: PublicHumanProfile) => {
+    const nextProfile: RealtimeProfile = {
+      clientId: updated.realtimeClientId,
+      displayName: updated.displayName,
+      handle: updated.handle,
+      avatarColor: authSession?.user.provider === 'github' ? '#9bcf66' : '#70a8c4',
+      ...(updated.avatarUrl ? { avatarUrl: updated.avatarUrl } : {}),
+      profileId: updated.id,
+      actorType: 'human',
+    }
+    saveRealtimeProfile(nextProfile)
+    setProfile(nextProfile)
+    setAuthSession((current) => current ? { ...current, user: { ...current.user, ...updated } } : current)
+    setKnownProfiles((current) => mergeRealtimeProfiles(current, [nextProfile]))
+    setMessages((current) => current.map((message) => {
+      const ownsMessage = message.profileId === updated.id || message.clientId === updated.realtimeClientId
+      const ownsAgent = message.actorType === 'agent' && message.ownerProfileId === updated.id
+      return {
+        ...message,
+        ...(ownsMessage ? { displayName: updated.displayName, handle: updated.handle, ...(updated.avatarUrl ? { avatarUrl: updated.avatarUrl } : { avatarUrl: undefined }) } : {}),
+        ...(ownsAgent ? { ownerHandle: updated.handle } : {}),
+      }
+    }))
+  }, [authSession?.user.provider])
 
   useEffect(() => {
     if (surface !== 'community' || authChecking) return
@@ -414,7 +439,7 @@ export function App() {
 
   if (surface === 'profile') {
     const pathProfileId = window.location.pathname.startsWith('/p/') ? decodeURIComponent(window.location.pathname.slice(3)) : undefined
-    return <ProfilePage session={authSession} profileId={pathProfileId} badgesOnly={window.location.pathname === '/badges'} onBack={backFromProfile} onSignIn={() => {
+    return <ProfilePage session={authSession} profileId={pathProfileId} badgesOnly={window.location.pathname === '/badges'} onBack={backFromProfile} onProfileUpdated={onProfileUpdated} onSignIn={() => {
       setAuthPendingProvider('github')
       beginOAuth('github', window.location.pathname)
     }} />

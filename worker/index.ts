@@ -13,6 +13,7 @@ import { authenticateRequest, handleAuthRequest, realtimeClientId, type AuthEnv 
 import { accountRequest } from './auth'
 import type { AgentAuthResult } from './accounts'
 import type { ExchangeActor } from './exchange'
+import type { PublicHumanProfile } from '../src/auth/types'
 export { ExchangeStore } from './exchange'
 export { AccountStore } from './accounts'
 
@@ -28,6 +29,14 @@ interface ConnectionAttachment extends RealtimeProfile {
   channelId: CommunityChannelId
   joinedAt: string
   canSend: boolean
+}
+
+interface ProfileUpdatePayload {
+  profileId?: string
+  realtimeClientId?: string
+  displayName?: string
+  handle?: string
+  avatarUrl?: string
 }
 
 const LEGACY_ROOM_NAME = LIVE_ROOM_KEY
@@ -109,6 +118,46 @@ function exchangeCorsHeaders(request: Request, env: Env) {
 function isLocalPreviewRequest(request: Request, env: Env) {
   const origin = request.headers.get('Origin') ?? ''
   return env.LOCAL_PREVIEW === 'true' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+}
+
+async function propagateProfileUpdate(env: Env, profile: PublicHumanProfile) {
+  const body = JSON.stringify({
+    profileId: profile.id,
+    realtimeClientId: profile.realtimeClientId,
+    displayName: profile.displayName,
+    handle: profile.handle,
+    ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
+  })
+  const results = await Promise.allSettled((['general', 'showcases', 'feedback'] as const).map(async (channelId) => {
+    const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
+    const response = await env.LIVE_ROOM.get(roomId).fetch(new Request(`https://internal/internal/profile-update?channelId=${channelId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    }))
+    if (!response.ok) throw new Error(`${channelId} profile update failed with ${response.status}`)
+  }))
+  for (const result of results) {
+    if (result.status === 'rejected') console.error('Realtime profile propagation failed', result.reason)
+  }
+}
+
+async function currentRealtimeIdentity(session: Awaited<ReturnType<typeof authenticateRequest>>, env: Env) {
+  if (!session) return null
+  if (session.accountId && env.ACCOUNTS) {
+    const response = await accountRequest(env, `/profile?accountId=${encodeURIComponent(session.accountId)}`)
+    if (response.ok) {
+      const { profile } = await response.json() as { profile: PublicHumanProfile }
+      return profile
+    }
+  }
+  return {
+    id: session.accountId ?? `${session.provider}:${session.subject}`,
+    displayName: session.displayName,
+    handle: session.handle,
+    realtimeClientId: await realtimeClientId(session),
+    ...(session.avatarUrl ? { avatarUrl: session.avatarUrl } : {}),
+  } satisfies Pick<PublicHumanProfile, 'id' | 'displayName' | 'handle' | 'realtimeClientId' | 'avatarUrl'>
 }
 
 async function handleMediaRequest(request: Request, env: Env): Promise<Response | null> {
@@ -265,7 +314,11 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
     const accountId = claims.accountId ?? `${claims.provider}:${claims.subject}`
     if (request.method === 'GET') return withApiHeaders(await accountRequest(env, `/profile?accountId=${encodeURIComponent(accountId)}`), request, env)
     const payload = await request.json().catch(() => ({})) as Record<string, unknown>
-    return withApiHeaders(await accountRequest(env, '/profile', { ...payload, accountId }, 'PATCH'), request, env)
+    const response = await accountRequest(env, '/profile', { ...payload, accountId }, 'PATCH')
+    if (!response.ok) return withApiHeaders(response, request, env)
+    const result = await response.json() as { profile?: PublicHumanProfile }
+    if (result.profile) await propagateProfileUpdate(env, result.profile)
+    return withApiHeaders(Response.json(result, { status: response.status }), request, env)
   }
   const publicProfileMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)$/)
   if (publicProfileMatch && request.method === 'GET') {
@@ -405,13 +458,14 @@ export default {
     const localPreview = isLocalPreviewRequest(request, env)
     const canSend = Boolean(session) || localPreview
     if (session) {
+      const identity = await currentRealtimeIdentity(session, env)
       roomUrl.searchParams.set('clientId', await realtimeClientId(session))
-      roomUrl.searchParams.set('displayName', session.displayName)
-      roomUrl.searchParams.set('handle', session.handle)
+      roomUrl.searchParams.set('displayName', identity?.displayName ?? session.displayName)
+      roomUrl.searchParams.set('handle', identity?.handle ?? session.handle)
       roomUrl.searchParams.set('avatarColor', session.provider === 'github' ? '#657c54' : '#47708a')
       roomUrl.searchParams.set('profileId', session.accountId ?? `${session.provider}:${session.subject}`)
       roomUrl.searchParams.set('actorType', 'human')
-      if (session.avatarUrl) roomUrl.searchParams.set('avatarUrl', session.avatarUrl)
+      if (identity?.avatarUrl) roomUrl.searchParams.set('avatarUrl', identity.avatarUrl)
     }
     roomUrl.searchParams.set('canSend', canSend ? 'true' : 'false')
     const roomRequest = new Request(roomUrl, request)
@@ -432,6 +486,7 @@ export class RealtimeRoom implements DurableObject {
     if (url.pathname === '/internal/messages') return this.handleHttpMessages(request, channelId)
     if (url.pathname === '/internal/export') return this.handleInternalExport(channelId)
     if (url.pathname === '/internal/import') return this.handleInternalImport(request, channelId)
+    if (url.pathname === '/internal/profile-update' && request.method === 'POST') return this.handleInternalProfileUpdate(request, channelId)
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return json({ error: 'Expected a WebSocket upgrade' }, 426)
     }
@@ -451,7 +506,19 @@ export class RealtimeRoom implements DurableObject {
     server.serializeAttachment(attachment)
     this.state.acceptWebSocket(server)
 
-    const messages = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    let messages = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    if (profile.profileId) {
+      const previousMessages = messages
+      const refreshed = this.applyProfileUpdate(messages, profile)
+      messages = refreshed.messages
+      if (refreshed.updatedCount) {
+        await this.state.storage.put(HISTORY_KEY, messages)
+        for (const message of messages) {
+          const previous = previousMessages.find((item) => item.id === message.id)
+          if (previous && JSON.stringify(previous) !== JSON.stringify(message)) this.broadcast({ type: 'message', message })
+        }
+      }
+    }
     this.send(server, {
       type: 'snapshot',
       messages,
@@ -664,6 +731,67 @@ export class RealtimeRoom implements DurableObject {
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
     return json({ message }, 201)
+  }
+
+  private async handleInternalProfileUpdate(request: Request, channelId: CommunityChannelId) {
+    let body: ProfileUpdatePayload
+    try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid profile update JSON' }, 400) }
+    const profileId = body.profileId?.trim().slice(0, 100)
+    const realtimeClientId = body.realtimeClientId?.trim().slice(0, 100)
+    const displayName = normalizeDisplayName(body.displayName ?? '')
+    const handle = normalizeHandle(body.handle ?? '')
+    if (!profileId || !displayName || (!realtimeClientId && !handle)) return json({ error: 'Profile identity was invalid' }, 400)
+    const avatarUrl = normalizeAvatarUrl(body.avatarUrl)
+    const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    const refreshed = this.applyProfileUpdate(history, body)
+    const updatedHistory = refreshed.messages
+    const updatedCount = refreshed.updatedCount
+    if (updatedCount) {
+      await this.state.storage.put(HISTORY_KEY, updatedHistory)
+      for (const message of updatedHistory) {
+        const previous = history.find((item) => item.id === message.id)
+        if (previous && JSON.stringify(previous) !== JSON.stringify(message)) this.broadcast({ type: 'message', message })
+      }
+    }
+    for (const socket of this.state.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as ConnectionAttachment | null
+      if (!attachment) continue
+      const ownsConnection = attachment.profileId === profileId || Boolean(realtimeClientId && attachment.clientId === realtimeClientId)
+      const ownsAgent = attachment.actorType === 'agent' && attachment.ownerProfileId === profileId
+      if (!ownsConnection && !ownsAgent) continue
+      socket.serializeAttachment({
+        ...attachment,
+        ...(ownsConnection ? { displayName, handle, ...(avatarUrl ? { avatarUrl } : { avatarUrl: undefined }) } : {}),
+        ...(ownsAgent ? { ownerHandle: handle } : {}),
+      })
+    }
+    if (updatedCount) this.broadcastPresence()
+    return json({ channelId, updated: updatedCount })
+  }
+
+  private applyProfileUpdate(history: RealtimeMessageRecord[], body: ProfileUpdatePayload) {
+    const profileId = body.profileId?.trim().slice(0, 100)
+    const realtimeClientId = body.realtimeClientId?.trim().slice(0, 100)
+    const displayName = normalizeDisplayName(body.displayName ?? '')
+    const handle = normalizeHandle(body.handle ?? '')
+    const avatarUrl = normalizeAvatarUrl(body.avatarUrl)
+    let updatedCount = 0
+    const messages = history.map((message) => {
+      const ownsMessage = Boolean(profileId && message.profileId === profileId) || Boolean(realtimeClientId && message.clientId === realtimeClientId)
+      const ownsAgent = Boolean(profileId && message.actorType === 'agent' && message.ownerProfileId === profileId)
+      if (!ownsMessage && !ownsAgent) return message
+      updatedCount += 1
+      return {
+        ...message,
+        ...(ownsMessage ? {
+          displayName,
+          handle,
+          ...(avatarUrl ? { avatarUrl } : { avatarUrl: undefined }),
+        } : {}),
+        ...(ownsAgent ? { ownerHandle: handle } : {}),
+      }
+    })
+    return { messages, updatedCount }
   }
 
   private broadcastPresence() {

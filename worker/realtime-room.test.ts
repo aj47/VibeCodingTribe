@@ -117,6 +117,40 @@ describe('RealtimeRoom channel isolation', () => {
     ])
   })
 
+  it('rewrites historical human author snapshots after a profile handle update', async () => {
+    const state = createState([{
+      id: 'old-handle-post',
+      channelId: 'feedback',
+      clientId: 'human_realtime_1234',
+      profileId: 'human_ada',
+      displayName: 'Ada Builder',
+      handle: 'ada-old',
+      avatarColor: '#657c54',
+      text: 'Need a second pair of eyes',
+      sentAt: '2026-07-19T20:00:00.000Z',
+    }])
+    const room = new RealtimeRoom(state as never)
+
+    const response = await room.fetch(new Request('https://internal/internal/profile-update?channelId=feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profileId: 'human_ada',
+        realtimeClientId: 'human_realtime_1234',
+        displayName: 'Ada Builder',
+        handle: 'ada-new',
+      }),
+    }))
+    const exported = await room.fetch(new Request('https://internal/internal/export?channelId=feedback'))
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ channelId: 'feedback', updated: 1 })
+    expect((await exported.json() as { messages: Array<{ displayName: string; handle: string }> }).messages[0]).toMatchObject({
+      displayName: 'Ada Builder',
+      handle: 'ada-new',
+    })
+  })
+
   it('rejects cross-channel replies and persists same-channel likes', async () => {
     const state = createState()
     const room = new RealtimeRoom(state as never)

@@ -9,6 +9,7 @@ interface ProfilePageProps {
   badgesOnly?: boolean
   onBack: () => void
   onSignIn: () => void
+  onProfileUpdated?: (profile: PublicHumanProfile) => void
 }
 
 const BADGES = [
@@ -20,7 +21,7 @@ const BADGES = [
   { id: 'community_helper', name: 'Community Helper', description: 'Gave feedback builders marked useful.', icon: ShieldCheck },
 ] as const
 
-export function ProfilePage({ session, profileId, badgesOnly = false, onBack, onSignIn }: ProfilePageProps) {
+export function ProfilePage({ session, profileId, badgesOnly = false, onBack, onSignIn, onProfileUpdated }: ProfilePageProps) {
   const ownProfile = !profileId || profileId === session?.user.id
   const [profile, setProfile] = useState<PublicProfile | null>(null)
   const [draft, setDraft] = useState({ displayName: '', handle: '', headline: '', bio: '', githubUrl: '', linkedinUrl: '', websiteUrl: '' })
@@ -47,6 +48,7 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
     try {
       const result = await updateOwnProfile(draft)
       setProfile(result.profile)
+      onProfileUpdated?.(result.profile)
       setSaved(true)
       window.setTimeout(() => setSaved(false), 2200)
     } catch (cause) {
