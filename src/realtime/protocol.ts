@@ -3,6 +3,14 @@ import { DEFAULT_CHANNEL_ID, isCommunityChannelId, normalizeCommunityChannelId, 
 export const LIVE_ROOM_KEY = 'vibecodingtribe.com/r/general'
 export const MAX_REALTIME_MESSAGE_LENGTH = 4_000
 
+export interface RealtimeLinkPreview {
+  url: string
+  title?: string
+  description?: string
+  imageUrl?: string
+  siteName?: string
+}
+
 export interface RealtimeProfile {
   clientId: string
   displayName: string
@@ -35,6 +43,7 @@ export interface RealtimeMessageRecord {
   buildName?: string
   buildUrl?: string
   imageUrl?: string
+  linkPreview?: RealtimeLinkPreview
   likedByClientIds?: string[]
 }
 
@@ -117,7 +126,8 @@ export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | 
   if (!channelId) return null
   const trimmed = text.trim()
   const imageUrl = normalizeHttpUrl(value.message.imageUrl)
-  if ((!trimmed && !imageUrl) || trimmed.length > MAX_REALTIME_MESSAGE_LENGTH) return null
+  const buildUrl = normalizeHttpUrl(value.message.buildUrl)
+  if ((!trimmed && !imageUrl && !buildUrl) || trimmed.length > MAX_REALTIME_MESSAGE_LENGTH) return null
   const intent = ['chat', 'showcase', 'needs_feedback', 'update', 'question'].includes(String(value.message.intent))
     ? value.message.intent as 'chat' | 'showcase' | 'needs_feedback' | 'update' | 'question'
     : undefined
@@ -125,7 +135,6 @@ export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | 
     ? value.message.parentId
     : undefined
   const buildName = typeof value.message.buildName === 'string' ? value.message.buildName.trim().slice(0, 80) : undefined
-  const buildUrl = normalizeHttpUrl(value.message.buildUrl)
   const commentKind = ['reply', 'feedback'].includes(String(value.message.commentKind))
     ? value.message.commentKind as 'reply' | 'feedback'
     : undefined
@@ -153,6 +162,34 @@ export function normalizeHttpUrl(value: unknown) {
   } catch {
     return undefined
   }
+}
+
+export function normalizeLinkPreview(value: unknown): RealtimeLinkPreview | undefined {
+  if (!isRecord(value)) return undefined
+  const url = normalizeHttpUrl(value.url)
+  if (!url) return undefined
+  const optionalText = (candidate: unknown, maxLength: number) => {
+    if (typeof candidate !== 'string') return undefined
+    const normalized = candidate.trim().replace(/\s+/g, ' ')
+    return normalized ? normalized.slice(0, maxLength) : undefined
+  }
+  const title = optionalText(value.title, 180)
+  const description = optionalText(value.description, 320)
+  const imageUrl = normalizeHttpUrl(value.imageUrl)
+  const siteName = optionalText(value.siteName, 80)
+  return {
+    url,
+    ...(title ? { title } : {}),
+    ...(description ? { description } : {}),
+    ...(imageUrl ? { imageUrl } : {}),
+    ...(siteName ? { siteName } : {}),
+  }
+}
+
+export function extractFirstHttpUrl(value: string) {
+  const match = value.match(/https?:\/\/[^\s<>"']+/i)
+  if (!match) return undefined
+  return normalizeHttpUrl(match[0].replace(/[),.;!?]+$/g, ''))
 }
 
 export function parseRealtimeServerEvent(value: unknown): RealtimeServerEvent | null {
@@ -192,10 +229,12 @@ export function parseRealtimeServerEvent(value: unknown): RealtimeServerEvent | 
 export function normalizeRealtimeMessageRecord(value: unknown): RealtimeMessageRecord | null {
   if (!isRecord(value)) return null
   const avatarUrl = normalizeAvatarUrl(value.avatarUrl)
+  const linkPreview = normalizeLinkPreview(value.linkPreview)
   const normalized = {
     ...value,
     channelId: normalizeCommunityChannelId(value.channelId),
     ...(avatarUrl ? { avatarUrl } : { avatarUrl: undefined }),
+    ...(linkPreview ? { linkPreview } : { linkPreview: undefined }),
   }
   return isRealtimeMessageRecord(normalized) ? normalized : null
 }
@@ -235,6 +274,7 @@ export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessag
     && (value.buildName === undefined || typeof value.buildName === 'string')
     && (value.buildUrl === undefined || normalizeHttpUrl(value.buildUrl) !== undefined)
     && (value.imageUrl === undefined || normalizeHttpUrl(value.imageUrl) !== undefined)
+    && (value.linkPreview === undefined || normalizeLinkPreview(value.linkPreview) !== undefined)
     && (value.likedByClientIds === undefined || (
       Array.isArray(value.likedByClientIds)
       && value.likedByClientIds.length <= 10_000

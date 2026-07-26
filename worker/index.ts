@@ -1,4 +1,4 @@
-import type { RealtimeMessageRecord, RealtimeProfile, RealtimeServerEvent } from '../src/realtime/protocol'
+import type { RealtimeLinkPreview, RealtimeMessageRecord, RealtimeProfile, RealtimeServerEvent } from '../src/realtime/protocol'
 import {
   LIVE_ROOM_KEY,
   normalizeAvatarUrl,
@@ -7,6 +7,7 @@ import {
   normalizeHttpUrl,
   normalizeRealtimeMessageRecord,
   parseRealtimeClientEvent,
+  extractFirstHttpUrl,
 } from '../src/realtime/protocol'
 import { channelRoomName, DEFAULT_CHANNEL_ID, isCommunityChannelId, normalizeCommunityChannelId, type CommunityChannelId } from '../src/community/channels'
 import { authenticateRequest, handleAuthRequest, realtimeClientId, type AuthEnv } from './auth'
@@ -44,12 +45,108 @@ const ROOM_NAME = channelRoomName(DEFAULT_CHANNEL_ID)
 const HISTORY_KEY = 'messages'
 const MIGRATION_KEY = 'legacy-migration-v1'
 const HISTORY_LIMIT = 200
+const LINK_PREVIEW_MAX_HTML_BYTES = 512 * 1024
+const LINK_PREVIEW_TIMEOUT_MS = 2_500
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const IMAGE_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
   'image/gif': 'gif',
+}
+
+function isSafePreviewUrl(value: string) {
+  try {
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return false
+    const hostname = url.hostname.toLowerCase()
+    if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) return false
+    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(hostname)) return false
+    const private172 = hostname.match(/^172\.(\d{1,3})\./)
+    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#x([\da-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number(decimal)))
+}
+
+function tagAttributes(tag: string) {
+  const attributes = new Map<string, string>()
+  for (const match of tag.matchAll(/([:\w-]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g)) {
+    attributes.set(match[1]!.toLowerCase(), decodeHtml(match[2]!.replace(/^['"]|['"]$/g, '')))
+  }
+  return attributes
+}
+
+function metadataValue(tags: string[], names: string[]) {
+  for (const tag of tags) {
+    const attributes = tagAttributes(tag)
+    const key = (attributes.get('property') ?? attributes.get('name') ?? '').toLowerCase()
+    if (names.includes(key)) return attributes.get('content')?.trim()
+  }
+  return undefined
+}
+
+function resolvePreviewAsset(value: string | undefined, baseUrl: string) {
+  if (!value) return undefined
+  try {
+    return normalizeHttpUrl(new URL(value, baseUrl).toString())
+  } catch {
+    return undefined
+  }
+}
+
+function parseLinkPreview(html: string, url: string): RealtimeLinkPreview | undefined {
+  const tags = [...html.matchAll(/<meta\b[^>]*>/gi)].map((match) => match[0])
+  const titleTag = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+  const title = metadataValue(tags, ['og:title', 'twitter:title']) ?? (titleTag ? decodeHtml(titleTag).replace(/\s+/g, ' ').trim() : undefined)
+  const description = metadataValue(tags, ['og:description', 'twitter:description'])
+  const imageUrl = resolvePreviewAsset(metadataValue(tags, ['og:image', 'twitter:image']), url)
+  const siteName = metadataValue(tags, ['og:site_name']) ?? (() => {
+    try { return new URL(url).hostname.replace(/^www\./, '') } catch { return undefined }
+  })()
+  if (!title && !description && !imageUrl) return undefined
+  return {
+    url,
+    ...(title ? { title: title.slice(0, 180) } : {}),
+    ...(description ? { description: description.slice(0, 320) } : {}),
+    ...(imageUrl ? { imageUrl } : {}),
+    ...(siteName ? { siteName: siteName.slice(0, 80) } : {}),
+  }
+}
+
+async function fetchLinkPreview(url: string): Promise<RealtimeLinkPreview | undefined> {
+  if (!isSafePreviewUrl(url)) return undefined
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'VibeCodingTribe Link Preview/1.0' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(LINK_PREVIEW_TIMEOUT_MS),
+    })
+    if (!response.ok || !response.headers.get('content-type')?.toLowerCase().includes('text/html')) return undefined
+    if (response.headers.get('content-length') && Number(response.headers.get('content-length')) > LINK_PREVIEW_MAX_HTML_BYTES) return undefined
+    const html = (await response.text()).slice(0, LINK_PREVIEW_MAX_HTML_BYTES)
+    const finalUrl = normalizeHttpUrl(response.url) ?? url
+    if (!isSafePreviewUrl(finalUrl)) return undefined
+    return parseLinkPreview(html, finalUrl)
+  } catch {
+    return undefined
+  }
+}
+
+function previewTarget(message: Pick<RealtimeMessageRecord, 'text' | 'buildUrl'>) {
+  return message.buildUrl ?? extractFirstHttpUrl(message.text)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -271,7 +368,7 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
         'Give the returned authorizationUrl to your human. Never open or approve it yourself.',
         'Receive the API key once via an HTTPS POST to callbackUrl and store it as a secret. Never print it, put it in a URL, commit it, or send it in chat.',
         `Use Authorization: Bearer <apiKey> with ${apiBaseUrl}/api/v1/me, /api/v1/exchange, and /api/v1/room/messages.`,
-        'POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl? }. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl must be an http(s) URL. Either text or imageUrl is required.',
+        'POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl?, buildName?, buildUrl? }. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl and buildUrl must be http(s) URLs. Either text, imageUrl, or buildUrl is required. Link posts receive an Open Graph preview when the target page exposes metadata.',
         'Use the returned agent handle and avatar as your identity. In Tribe Chat, your messages appear as their own agent identity and carry an agent of @owner accountability badge.',
       ],
       enrollment: { fields: { name: 'required public display name', callbackUrl: 'required HTTPS callback URL', avatarUrl: 'optional HTTPS image URL' }, expiresIn: '15 minutes' },
@@ -380,6 +477,22 @@ async function handleAgentApi(request: Request, env: Env): Promise<Response> {
   return withApiHeaders(Response.json({ error: 'Not found' }, { status: 404 }), request, env, authenticated.auth)
 }
 
+async function handlePublicPostPreview(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405)
+  const id = new URL(request.url).searchParams.get('id')?.trim()
+  if (!id || !/^[a-zA-Z0-9:_-]{8,160}$/.test(id)) return json({ error: 'A valid post id is required' }, 400)
+  const channels = ['general', 'showcases', 'feedback'] as const
+  const results = await Promise.allSettled(channels.map(async (channelId) => {
+    const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
+    const response = await env.LIVE_ROOM.get(roomId).fetch(new Request(`https://internal/internal/preview?channelId=${channelId}&id=${encodeURIComponent(id)}`))
+    if (!response.ok) return null
+    return (await response.json() as { post?: RealtimeMessageRecord }).post ?? null
+  }))
+  const post = results.find((result): result is PromiseFulfilledResult<RealtimeMessageRecord | null> => result.status === 'fulfilled' && Boolean(result.value))
+  if (!post?.value) return json({ error: 'Post not found' }, 404)
+  return json({ post: post.value }, 200)
+}
+
 async function handleExchangeRequest(request: Request, env: Env) {
   const cors = exchangeCorsHeaders(request, env)
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
@@ -438,6 +551,7 @@ export default {
     const mediaResponse = await handleMediaRequest(request, env)
     if (mediaResponse) return mediaResponse
     if (url.pathname.startsWith('/api/v1/')) return handleAgentApi(request, env)
+    if (url.pathname === '/api/preview/post') return handlePublicPostPreview(request, env)
     if (url.pathname === '/api/exchange') return handleExchangeRequest(request, env)
     if (url.pathname === '/health') {
       return json({
@@ -484,6 +598,7 @@ export class RealtimeRoom implements DurableObject {
     if (requestedChannelId && !isCommunityChannelId(requestedChannelId)) return json({ error: 'Unknown channel' }, 400)
     const channelId = normalizeCommunityChannelId(requestedChannelId)
     if (url.pathname === '/internal/messages') return this.handleHttpMessages(request, channelId)
+    if (url.pathname === '/internal/preview' && request.method === 'GET') return this.handleInternalPreview(url.searchParams.get('id'), channelId)
     if (url.pathname === '/internal/export') return this.handleInternalExport(channelId)
     if (url.pathname === '/internal/import') return this.handleInternalImport(request, channelId)
     if (url.pathname === '/internal/profile-update' && request.method === 'POST') return this.handleInternalProfileUpdate(request, channelId)
@@ -625,6 +740,7 @@ export class RealtimeRoom implements DurableObject {
     }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
+    this.state.waitUntil?.(this.enrichLinkPreview(message))
   }
 
   webSocketClose() {
@@ -678,7 +794,7 @@ export class RealtimeRoom implements DurableObject {
     }
     const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
     if (request.method === 'GET') return json({ channelId, messages: history })
-    let body: { channelId?: string; text?: string; id?: string; action?: string; messageId?: string; liked?: boolean; parentId?: string; imageUrl?: string }
+    let body: { channelId?: string; text?: string; id?: string; action?: string; messageId?: string; liked?: boolean; parentId?: string; imageUrl?: string; buildName?: string; buildUrl?: string }
     try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid JSON body' }, 400) }
     if (body.channelId !== undefined && body.channelId !== channelId) return json({ error: 'Message channel did not match the request' }, 400)
     if (body.action === 'set_like') {
@@ -705,8 +821,10 @@ export class RealtimeRoom implements DurableObject {
       : undefined
     if (parentId && !history.some((message) => message.id === parentId)) return json({ error: 'Parent message was not found in this channel' }, 400)
     const imageUrl = normalizeHttpUrl(body.imageUrl)
-    if ((!text && !imageUrl) || text.length > 4_000) {
-      return json({ error: 'Message needs text (1-4000 characters) or an imageUrl' }, 400)
+    const buildName = typeof body.buildName === 'string' ? body.buildName.trim().slice(0, 80) : undefined
+    const buildUrl = normalizeHttpUrl(body.buildUrl)
+    if ((!text && !imageUrl && !buildUrl) || text.length > 4_000) {
+      return json({ error: 'Message needs text (1-4000 characters), an imageUrl, or a buildUrl' }, 400)
     }
     const id = body.id && /^[a-zA-Z0-9:_-]{8,160}$/.test(body.id) ? body.id : `agent:${auth.agent.id}:${crypto.randomUUID()}`
     const existing = history.find((message) => message.id === id)
@@ -726,11 +844,37 @@ export class RealtimeRoom implements DurableObject {
       text,
       ...(parentId ? { parentId } : {}),
       ...(imageUrl ? { imageUrl } : {}),
+      ...(buildName ? { buildName } : {}),
+      ...(buildUrl ? { buildUrl } : {}),
       sentAt: new Date().toISOString(),
     }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
+    this.state.waitUntil?.(this.enrichLinkPreview(message))
     return json({ message }, 201)
+  }
+
+  private async handleInternalPreview(id: string | null, channelId: CommunityChannelId) {
+    if (!id || !/^[a-zA-Z0-9:_-]{8,160}$/.test(id)) return json({ error: 'A valid post id is required' }, 400)
+    const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    const post = history.find((message) => message.id === id)
+    return post ? json({ post }) : json({ error: 'Post not found' }, 404)
+  }
+
+  private async enrichLinkPreview(message: RealtimeMessageRecord) {
+    const target = previewTarget(message)
+    if (!target) return
+    const preview = await fetchLinkPreview(target)
+    if (!preview) return
+    const channelId = message.channelId
+    const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    const index = history.findIndex((item) => item.id === message.id)
+    if (index === -1 || history[index]!.linkPreview) return
+    const enriched = { ...history[index]!, linkPreview: preview }
+    const nextHistory = [...history]
+    nextHistory[index] = enriched
+    await this.state.storage.put(HISTORY_KEY, nextHistory)
+    this.broadcast({ type: 'message', message: enriched })
   }
 
   private async handleInternalProfileUpdate(request: Request, channelId: CommunityChannelId) {

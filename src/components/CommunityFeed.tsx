@@ -25,7 +25,7 @@ import type { AuthProvider } from '../auth/types'
 import { type CommunityChannelId } from '../community/channels'
 import { findActiveThreads, type ChannelActivityMap } from '../community/channel-navigation'
 import { type CommunityPostInput, type CommunityPostIntent } from '../community/types'
-import type { RealtimeMessageRecord, RealtimeProfile } from '../realtime/protocol'
+import { extractFirstHttpUrl, type RealtimeMessageRecord, type RealtimeProfile } from '../realtime/protocol'
 import { validateCommunityImage } from '../services/media'
 import { type LocalReadState } from '../services/read-state'
 import { Brand } from './Brand'
@@ -115,6 +115,27 @@ function PastedImagePreview({ image, onRemove }: { image: PastedImage; onRemove:
     <span><strong>{image.file.name || 'Pasted image'}</strong><small>{Math.max(1, Math.round(image.file.size / 1024))} KB · ready to upload</small></span>
     <button type="button" aria-label="Remove pasted image" onClick={onRemove}><X size={15} /></button>
   </div>
+}
+
+function CommunityLinkPreview({ message }: { message: Pick<RealtimeMessageRecord, 'text' | 'buildName' | 'buildUrl' | 'linkPreview'> }) {
+  const preview = message.linkPreview
+  const href = preview?.url ?? message.buildUrl ?? extractFirstHttpUrl(message.text)
+  if (!href) return null
+  let hostname = href
+  try { hostname = new URL(href).hostname.replace(/^www\./, '') } catch { /* keep the full URL */ }
+  const title = preview?.title ?? message.buildName ?? hostname
+  const description = preview?.description
+  const siteName = preview?.siteName ?? hostname
+  return <a className="community-link-preview" href={href} target="_blank" rel="noreferrer" aria-label={`Open link preview for ${title}`}>
+    {preview?.imageUrl && <div className="community-link-preview__image"><img src={preview.imageUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = 'none' }} /></div>}
+    <div className="community-link-preview__content">
+      <span className="community-link-preview__site"><Link2 size={12} /> {siteName}</span>
+      <strong>{title}</strong>
+      {description && <p>{description}</p>}
+      <small>{href}</small>
+    </div>
+    <ExternalLink className="community-link-preview__external" size={14} aria-hidden="true" />
+  </a>
 }
 
 export function CommunityFeed({
@@ -238,7 +259,7 @@ export function CommunityFeed({
 
   async function publish(event: FormEvent) {
     event.preventDefault()
-    if ((!draft.trim() && !pastedImage) || publishing) return
+    if (!draft.trim() && !pastedImage && !buildUrl.trim()) return
     setPublishing(true)
     setImageError(null)
     try {
@@ -371,6 +392,7 @@ export function CommunityFeed({
               </header>
               {message.text && <p>{message.text}</p>}
               {message.imageUrl && <figure className="community-post-image"><img src={message.imageUrl} alt={message.text || 'Image shared with this post'} loading="lazy" /></figure>}
+              {(message.linkPreview || message.buildUrl || extractFirstHttpUrl(message.text)) && <CommunityLinkPreview message={message} />}
               {message.buildName && <a className="community-build-attachment" href={message.buildUrl || '#'} target={message.buildUrl ? '_blank' : undefined} rel="noreferrer"><span><Rocket size={18} /></span><div><small>ATTACHED BUILD</small><strong>{message.buildName}</strong></div>{message.buildUrl && <ExternalLink size={14} />}</a>}
               <footer>
                 <button type="button" onClick={() => { const latestReply = [...postReplies].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]; if (latestReply) onReadThread(channelId, message.id, latestReply.sentAt); onOpenThread(channelId, message.id); setCommentKind(kind === 'feedback' ? 'feedback' : 'reply'); setReply(''); setReplyImage(null); setReplyImageError(null); setReplyingTo(message.id); requestAnimationFrame(() => replyRef.current?.focus()) }}><MessageCircle size={14} /> {postReplies.length ? `${postReplies.length} response${postReplies.length === 1 ? '' : 's'}` : kind === 'feedback' ? 'Give feedback' : 'Reply'}</button>

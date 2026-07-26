@@ -43,6 +43,26 @@ describe('public room access', () => {
     expect(forwardedUrl.searchParams.get('channelId')).toBe('feedback')
   })
 
+  it('serves a public post preview across the channel rooms', async () => {
+    const post = { id: 'rt_human_12345678', displayName: 'Ada Builder', handle: 'ada', text: 'A shared build', sentAt: '2026-07-24T00:00:00.000Z' }
+    const idFromName = vi.fn((name: string) => name)
+    const roomFetch = vi.fn(() => Response.json({ post }))
+    const env = {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+      LIVE_ROOM: { idFromName, get: vi.fn(() => ({ fetch: roomFetch })) },
+    }
+
+    const response = await worker.fetch(new Request('https://worker.example/api/preview/post?id=rt_human_12345678'), env as never)
+    const result = await response.json() as { post: { id: string } }
+
+    expect(response.status).toBe(200)
+    expect(result.post.id).toBe('rt_human_12345678')
+    expect(idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/general')
+    expect(idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/showcases')
+    expect(idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/feedback')
+  })
+
   it('rejects unknown channel ids before opening a room', async () => {
     const idFromName = vi.fn()
     const env = {
@@ -108,4 +128,5 @@ describe('public room access', () => {
     expect(put).toHaveBeenCalledOnce()
     expect(put.mock.calls[0]?.[0]).toMatch(/\.png$/)
   })
+
 })

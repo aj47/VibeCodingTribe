@@ -73,6 +73,48 @@ describe('CommunityFeed post hierarchy', () => {
     expect(onOpenChannel).toHaveBeenCalledWith('showcases')
   })
 
+  it('renders a link preview image and metadata for shared URLs', () => {
+    render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[{ ...messages[0], id: 'link_12345678', text: 'Review this build', linkPreview: {
+        url: 'https://nativdocs.co/example',
+        title: 'Native documents for builders',
+        description: 'Share HTML and Markdown files with comments.',
+        imageUrl: 'https://nativdocs.co/og.png',
+        siteName: 'NativDocs',
+      }}]}
+      participants={[]}
+      onlineCount={0}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    const preview = screen.getByRole('link', { name: 'Open link preview for Native documents for builders' })
+    expect(preview).toHaveAttribute('href', 'https://nativdocs.co/example')
+    expect(preview.querySelector('img')).toHaveAttribute('src', 'https://nativdocs.co/og.png')
+    expect(within(preview).getByText('Share HTML and Markdown files with comments.')).toBeInTheDocument()
+  })
+
   it('accepts an image pasted into the composer and publishes an image-only post', async () => {
     const onSend = vi.fn()
     const onUploadImage = vi.fn(async () => 'https://media.example/pasted.png')

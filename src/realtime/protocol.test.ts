@@ -83,6 +83,16 @@ describe('realtime protocol', () => {
     })).toBeNull()
   })
 
+  it('detects URLs in text and allows a URL-only build attachment', () => {
+    expect(parseRealtimeClientEvent({
+      type: 'send',
+      message: { id: 'rt_client_12345678_link', text: '', buildUrl: 'https://nativdocs.co/example' },
+    })).toEqual({
+      type: 'send',
+      message: { id: 'rt_client_12345678_link', channelId: 'general', text: '', buildUrl: 'https://nativdocs.co/example' },
+    })
+  })
+
   it('accepts a complete server snapshot', () => {
     const message = {
       id: 'rt_client_12345678_3',
