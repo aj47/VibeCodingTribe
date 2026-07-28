@@ -115,6 +115,128 @@ describe('CommunityFeed post hierarchy', () => {
     expect(within(preview).getByText('Share HTML and Markdown files with comments.')).toBeInTheDocument()
   })
 
+  it('renders safe inline previews for supported video links and keeps the original URLs', () => {
+    render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[
+        { ...messages[0], id: 'youtube_12345678', text: 'Walkthrough https://youtu.be/dQw4w9WgXcQ' },
+        { ...messages[0], id: 'vimeo_12345678', text: 'Demo https://vimeo.com/76979871', sentAt: '2026-07-21T18:04:00.000Z' },
+        { ...messages[0], id: 'loom_12345678', text: 'Notes https://www.loom.com/share/abc123xyz', sentAt: '2026-07-21T18:05:00.000Z' },
+      ]}
+      participants={[]}
+      onlineCount={0}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    expect(screen.getByTitle('YouTube video preview')).toHaveAttribute('src', 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?rel=0')
+    expect(screen.getByTitle('Vimeo video preview')).toHaveAttribute('src', 'https://player.vimeo.com/video/76979871')
+    expect(screen.getByTitle('Loom video preview')).toHaveAttribute('src', 'https://www.loom.com/embed/abc123xyz')
+    expect(screen.getByRole('link', { name: /YouTube video/ })).toHaveAttribute('href', 'https://youtu.be/dQw4w9WgXcQ')
+    expect(screen.getByRole('link', { name: /Vimeo video/ })).toHaveAttribute('href', 'https://vimeo.com/76979871')
+  })
+
+  it('scrolls to and focuses a thread opened from active threads', async () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+    render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={messages}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      threadId="feedback_12345678"
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    const replyField = await screen.findByRole('textbox', { name: 'Reply to Ada Builder' })
+    await waitFor(() => expect(replyField).toHaveFocus())
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+  })
+
+  it('renders at most three replies and collapses the middle replies', () => {
+    const extraReplies: RealtimeMessageRecord[] = Array.from({ length: 4 }, (_, index) => ({
+      ...profile,
+      id: `extra_reply_${index}`,
+      channelId: 'general',
+      text: `Extra reply ${index}`,
+      sentAt: `2026-07-21T18:0${4 + index}:00.000Z`,
+      parentId: 'feedback_12345678',
+      commentKind: 'reply',
+    }))
+    const { container } = render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[...messages, ...extraReplies]}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    expect(container.querySelectorAll('.community-reply')).toHaveLength(3)
+    expect(screen.getByText('… 2 middle replies hidden …')).toBeInTheDocument()
+  })
+
   it('accepts an image pasted into the composer and publishes an image-only post', async () => {
     const onSend = vi.fn()
     const onUploadImage = vi.fn(async () => 'https://media.example/pasted.png')

@@ -117,10 +117,74 @@ function PastedImagePreview({ image, onRemove }: { image: PastedImage; onRemove:
   </div>
 }
 
+interface CommunityVideoLink {
+  provider: string
+  title: string
+  kind: 'iframe' | 'video'
+  src: string
+}
+
+function communityVideoLink(value: string | undefined): CommunityVideoLink | undefined {
+  if (!value) return undefined
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'https:') return undefined
+  const host = url.hostname.toLowerCase().replace(/^www\./, '')
+  const youtubeId = host === 'youtu.be'
+    ? url.pathname.split('/').filter(Boolean)[0]
+    : ['youtube.com', 'm.youtube.com', 'youtube-nocookie.com'].includes(host)
+      ? url.searchParams.get('v') ?? url.pathname.match(/^\/(?:shorts|embed|live)\/([\w-]{6,20})/)?.[1]
+      : undefined
+  if (youtubeId && /^[\w-]{6,20}$/.test(youtubeId)) {
+    return { provider: 'YouTube', title: 'YouTube video', kind: 'iframe', src: `https://www.youtube-nocookie.com/embed/${youtubeId}?rel=0` }
+  }
+  const vimeoId = host === 'player.vimeo.com'
+    ? url.pathname.match(/^\/video\/(\d+)/)?.[1]
+    : ['vimeo.com'].includes(host)
+      ? url.pathname.match(/^\/(?:video\/)?(\d+)/)?.[1]
+      : undefined
+  if (vimeoId) return { provider: 'Vimeo', title: 'Vimeo video', kind: 'iframe', src: `https://player.vimeo.com/video/${vimeoId}` }
+  const loomId = host === 'loom.com'
+    ? url.pathname.match(/^\/(?:share|embed)\/([a-zA-Z0-9]+)$/)?.[1]
+    : undefined
+  if (loomId) return { provider: 'Loom', title: 'Loom video', kind: 'iframe', src: `https://www.loom.com/embed/${loomId}` }
+  const dailymotionId = host === 'dai.ly'
+    ? url.pathname.match(/^\/([a-zA-Z0-9]+)$/)?.[1]
+    : host === 'dailymotion.com'
+      ? url.pathname.match(/^\/video\/([a-zA-Z0-9]+)$/)?.[1]
+      : undefined
+  if (dailymotionId) return { provider: 'Dailymotion', title: 'Dailymotion video', kind: 'iframe', src: `https://www.dailymotion.com/embed/video/${dailymotionId}` }
+  if (/\.(?:mp4|webm|ogg|m4v)(?:$|[?#])/i.test(url.pathname + url.search + url.hash)) {
+    return { provider: 'Video file', title: 'Video preview', kind: 'video', src: url.toString() }
+  }
+  return undefined
+}
+
+function CommunityVideoLinkPreview({ href, video }: { href: string; video: CommunityVideoLink }) {
+  return <section className="community-video-link-preview" aria-label={`${video.provider} video preview`}>
+    <div className="community-video-link-preview__player">
+      {video.kind === 'video'
+        ? <video src={video.src} controls playsInline preload="metadata">Your browser cannot play this video.</video>
+        : <iframe src={video.src} title={`${video.title} preview`} loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen sandbox="allow-scripts allow-same-origin allow-presentation" />}
+    </div>
+    <a className="community-video-link-preview__source" href={href} target="_blank" rel="noreferrer">
+      <span><strong>{video.provider}</strong><small>INLINE VIDEO LINK</small></span>
+      <div><b>{video.title}</b><small>{href}</small></div>
+      <ExternalLink size={14} aria-hidden="true" />
+    </a>
+  </section>
+}
+
 function CommunityLinkPreview({ message }: { message: Pick<RealtimeMessageRecord, 'text' | 'buildName' | 'buildUrl' | 'linkPreview'> }) {
   const preview = message.linkPreview
   const href = preview?.url ?? message.buildUrl ?? extractFirstHttpUrl(message.text)
   if (!href) return null
+  const video = communityVideoLink(href)
+  if (video) return <CommunityVideoLinkPreview href={href} video={video} />
   let hostname = href
   try { hostname = new URL(href).hostname.replace(/^www\./, '') } catch { /* keep the full URL */ }
   const title = preview?.title ?? message.buildName ?? hostname
@@ -185,6 +249,7 @@ export function CommunityFeed({
   const [channelPickerOpen, setChannelPickerOpen] = useState(false)
   const replyRef = useRef<HTMLTextAreaElement>(null)
   const channelPickerButtonRef = useRef<HTMLButtonElement>(null)
+  const threadRefs = useRef(new Map<string, HTMLElement>())
 
   useEffect(() => {
     setIntent(missionsOnly ? 'needs_feedback' : intentForChannel(channelId))
@@ -202,6 +267,7 @@ export function CommunityFeed({
     if (replyImage) URL.revokeObjectURL(replyImage.previewUrl)
   }, [replyImage])
 
+
   const topLevel = useMemo(() => messages
     .filter((message) => !message.parentId && (!missionsOnly || message.intent === 'needs_feedback'))
     .sort((a, b) => b.sentAt.localeCompare(a.sentAt)), [messages, missionsOnly])
@@ -216,6 +282,16 @@ export function CommunityFeed({
   useEffect(() => {
     if (threadId && replies.has(threadId)) setReplyingTo(threadId)
   }, [replies, threadId])
+  useEffect(() => {
+    if (!threadId || replyingTo !== threadId) return
+    const frame = requestAnimationFrame(() => {
+      const thread = threadRefs.current.get(threadId)
+      if (!thread) return
+      thread.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      thread.querySelector<HTMLTextAreaElement>('.community-reply-form textarea')?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [replyingTo, threadId])
   const activeThreads = useMemo(() => findActiveThreads(messages, channelId), [channelId, messages])
   useEffect(() => {
     if (!threadId || !replies.has(threadId)) return
@@ -382,8 +458,21 @@ export function CommunityFeed({
             const meta = POST_META[kind]
             const PostIcon = meta.icon
             const postReplies = replies.get(message.id) ?? []
+            const renderedReplies: Array<RealtimeMessageRecord | null> = postReplies.length > 3
+              ? [postReplies[0]!, null, ...postReplies.slice(-2)]
+              : postReplies
+            const hiddenReplyCount = postReplies.length - renderedReplies.filter(Boolean).length
             const feedbackCount = postReplies.filter((item) => item.commentKind === 'feedback').length
-            return <article className={`community-post community-post--${kind}`} key={message.id}>
+            return <article
+              ref={(element) => {
+                if (element) threadRefs.current.set(message.id, element)
+                else threadRefs.current.delete(message.id)
+              }}
+              className={`community-post community-post--${kind}${threadId === message.id ? ' is-thread-focused' : ''}`}
+              data-thread-id={message.id}
+              key={message.id}
+              tabIndex={threadId === message.id ? -1 : undefined}
+            >
               <div className="community-post__typebar"><span><PostIcon size={13} /> {meta.label}</span><small>{meta.context}</small></div>
               <header>
                 <button type="button" onClick={() => message.profileId && onOpenProfile(message.profileId)}><Avatar item={message} /></button>
@@ -399,7 +488,7 @@ export function CommunityFeed({
                 <button className="community-like" type="button" disabled={!canPost} aria-pressed={message.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${message.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} post by ${message.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(message.id, !(message.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={14} fill="currentColor" /> {message.likedByClientIds?.length ? message.likedByClientIds.length : 'Like'}</button>
                 <button type="button" onClick={() => void sharePost(message)}><Share2 size={14} /> {kind === 'showcase' ? 'Share showcase' : kind === 'feedback' ? 'Share request' : 'Share'}</button>
               </footer>
-              {postReplies.length > 0 && <div className="community-replies" aria-label={`Responses to ${message.displayName}`}>{postReplies.map((item) => <div className={`community-reply community-reply--${item.commentKind === 'feedback' ? 'feedback' : 'reply'}`} key={item.id}><button type="button" onClick={() => item.profileId && onOpenProfile(item.profileId)}><Avatar item={item} /></button><div><span><strong>{item.displayName}</strong> · {relativeTime(item.sentAt)} <em>{item.commentKind === 'feedback' ? 'Feedback' : 'Reply'}</em></span>{item.text && <p>{item.text}</p>}{item.imageUrl && <img className="community-reply-image" src={item.imageUrl} alt={item.text || 'Image shared in this response'} loading="lazy" />}<button className="community-reply-like" type="button" disabled={!canPost} aria-pressed={item.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${item.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} response by ${item.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(item.id, !(item.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={12} fill="currentColor" /> {item.likedByClientIds?.length ? item.likedByClientIds.length : 'Like'}</button></div></div>)}</div>}
+              {postReplies.length > 0 && <div className="community-replies" aria-label={`Responses to ${message.displayName}`}>{renderedReplies.map((item) => item ? <div className={`community-reply community-reply--${item.commentKind === 'feedback' ? 'feedback' : 'reply'}`} key={item.id}><button type="button" onClick={() => item.profileId && onOpenProfile(item.profileId)}><Avatar item={item} /></button><div><span><strong>{item.displayName}</strong> · {relativeTime(item.sentAt)} <em>{item.commentKind === 'feedback' ? 'Feedback' : 'Reply'}</em></span>{item.text && <p>{item.text}</p>}{item.imageUrl && <img className="community-reply-image" src={item.imageUrl} alt={item.text || 'Image shared in this response'} loading="lazy" />}<button className="community-reply-like" type="button" disabled={!canPost} aria-pressed={item.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${item.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} response by ${item.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(item.id, !(item.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={12} fill="currentColor" /> {item.likedByClientIds?.length ? item.likedByClientIds.length : 'Like'}</button></div></div> : <div className="community-replies__hidden" key={`${message.id}-hidden`} role="status">… {hiddenReplyCount} middle repl{hiddenReplyCount === 1 ? 'y' : 'ies'} hidden …</div>)}</div>}
               {replyingTo === message.id && <form className="community-reply-form" onSubmit={(event) => void publishReply(event, message.id)}><textarea ref={replyRef} aria-label={`Reply to ${message.displayName}`} placeholder="Leave useful feedback, ask a question, or paste an image…" value={reply} onPaste={(event) => capturePastedImage(event, 'reply')} onChange={(event) => setReply(event.target.value)} />{replyImage && <PastedImagePreview image={replyImage} onRemove={() => setReplyImage(null)} />}{replyImageError && <p className="community-image-error" role="alert">{replyImageError}</p>}<div><span><button className={commentKind === 'feedback' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('feedback')}>Feedback</button><button className={commentKind === 'reply' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('reply')}>Reply</button></span><button type="button" aria-label="Cancel reply" onClick={() => { setReplyingTo(null); setReplyImage(null); setReplyImageError(null) }}><X size={14} /></button><button className="community-publish" type="submit" disabled={(!reply.trim() && !replyImage) || publishingReply}>{publishingReply ? <LoaderCircle className="is-spinning" size={14} /> : 'Send'}</button></div></form>}
             </article>
           })}
