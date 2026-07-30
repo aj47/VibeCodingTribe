@@ -32,28 +32,29 @@ describe('App community loop', () => {
     expect(screen.getByText(/conversation that used to live in Tribe Chat/i)).toBeInTheDocument()
   })
 
-  it('uses Missions as the Needs Feedback view of the same feed', () => {
+  it('folds the former Missions view into General', () => {
     window.history.replaceState({}, '', '/missions')
     render(<App />)
 
-    expect(screen.getByRole('heading', { name: 'Builders who need your eyes' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Posts needing feedback' })).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: 'Channels' })).toHaveTextContent('Feedback')
+    expect(window.location.pathname).toBe('/c/general')
+    expect(screen.getByRole('heading', { name: 'What are you building?' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Community feed' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Channels' })).toHaveTextContent('General')
   })
 
-  it('redirects the retired exchange route to Needs Feedback', async () => {
+  it('redirects the retired exchange route to General', async () => {
     window.history.replaceState({}, '', '/exchange')
     render(<App />)
 
-    await waitFor(() => expect(window.location.pathname).toBe('/missions'))
-    expect(screen.getByRole('heading', { name: 'Builders who need your eyes' })).toBeInTheDocument()
+    await waitFor(() => expect(window.location.pathname).toBe('/c/general'))
+    expect(screen.getByRole('heading', { name: 'What are you building?' })).toBeInTheDocument()
   })
 
   it('preserves and consumes an OAuth session while redirecting the retired exchange route', () => {
     window.history.replaceState({}, '', '/exchange#vct_session=signed.callback-token')
     render(<App />)
 
-    expect(window.location.pathname).toBe('/missions')
+    expect(window.location.pathname).toBe('/c/general')
     expect(window.location.hash).toBe('')
     expect(window.localStorage.getItem('vct-session-token-v1')).toBe('signed.callback-token')
   })
@@ -62,7 +63,7 @@ describe('App community loop', () => {
     window.history.replaceState({}, '', '/exchange?auth_error=Could+not+complete+linkedin+sign-in')
     render(<App />)
 
-    expect(window.location.pathname).toBe('/missions')
+    expect(window.location.pathname).toBe('/c/general')
     expect(screen.getByRole('alert')).toHaveTextContent('Could not complete linkedin sign-in')
   })
 

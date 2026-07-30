@@ -38,8 +38,8 @@ const LEGACY_STORAGE_KEYS = ['vct-workspace-v3', 'vct-realtime-profile-v1', 'vct
 
 function loadSurface(): Surface {
   const path = window.location.pathname.replace(/\/+$/, '')
-  if (path === '/exchange') {
-    window.history.replaceState({}, '', `/missions${window.location.search}${window.location.hash}`)
+  if (path === '/exchange' || path === '/missions' || path === '/c/feedback' || path === '/c/showcases') {
+    window.history.replaceState({}, '', `${channelPath('general')}${window.location.search}${window.location.hash}`)
   }
   if (path === '/welcome') return 'home'
   if (path === '/invite-agent') return 'invite-agent'
@@ -353,7 +353,7 @@ export function App() {
   }
 
   const openMissions = () => {
-    window.history.pushState({}, '', channelPath('feedback'))
+    window.history.pushState({}, '', channelPath('general'))
     setRouteVersion((current) => current + 1)
     setSurface('community')
   }

@@ -69,8 +69,11 @@ describe('CommunityFeed post hierarchy', () => {
     expect(within(feedbackPost as HTMLElement).getByText('Feedback request')).toBeInTheDocument()
     expect(within(feedbackPost as HTMLElement).getByText('Feedback', { selector: 'em' })).toBeInTheDocument()
     expect(within(feedbackPost as HTMLElement).getByRole('button', { name: /1 response/i })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /ShowcasesProgress, launches, and builds in public/ }))
-    expect(onOpenChannel).toHaveBeenCalledWith('showcases')
+    expect(screen.getByRole('button', { name: /General\. The second line is very clear\. Unread/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Showcases/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /FeedbackSpecific/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /General\. The second line is very clear\. Unread/ }))
+    expect(onOpenChannel).toHaveBeenCalledWith('general')
   })
 
   it('renders a link preview image and metadata for shared URLs', () => {

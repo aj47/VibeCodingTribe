@@ -186,6 +186,7 @@ a { color: inherit; text-decoration: none; }
 .channel-sidebar__list button > span, .channel-sidebar__threads button > span { display: grid; min-width: 0; flex: 1; gap: 2px; }
 .channel-sidebar__list strong, .channel-sidebar__threads strong { overflow: hidden; color: #354238; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .channel-sidebar__list small, .channel-sidebar__threads small { overflow: hidden; color: #858d85; font: 400 8px/1.35 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.channel-sidebar__list small.is-unread { color: #455248; font-weight: 600; }
 .channel-sidebar__threads { padding-top: 10px; border-top: 1px solid #d9d5cb; }
 .channel-sidebar__threads button { padding-left: 0; border-radius: 0; border-top: 1px solid #e2ded5; }
 .channel-sidebar__threads button > svg { margin-top: 2px; color: #638a73; }
@@ -366,6 +367,7 @@ a { color: inherit; text-decoration: none; }
 :root[data-theme='dark'] .channel-sidebar__list button.is-active { background: #26382c; color: #a9dbbc; }
 :root[data-theme='dark'] .channel-sidebar__list strong, :root[data-theme='dark'] .channel-sidebar__threads strong { color: #d5ddd6; }
 :root[data-theme='dark'] .channel-sidebar__list small, :root[data-theme='dark'] .channel-sidebar__threads small, :root[data-theme='dark'] .channel-sidebar__threads em { color: #919c93; }
+:root[data-theme='dark'] .channel-sidebar__list small.is-unread { color: #c5d0c7; }
 :root[data-theme='dark'] .channel-sidebar__threads { border-color: #303a33; }
 :root[data-theme='dark'] .channel-sidebar__threads button { border-color: #303a33; }
 :root[data-theme='dark'] .channel-sidebar__unread { box-shadow: 0 0 0 2px #171d19; }

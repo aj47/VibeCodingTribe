@@ -37,7 +37,9 @@ describe('ChannelSidebar', () => {
     const onOpenThread = vi.fn()
     render(<ChannelSidebar selectedChannelId="general" activity={{ general: { latestActivity: '2026-07-24T10:03:00.000Z' } }} messages={messages} readState={{ channels: {}, threads: {} }} onSelectChannel={vi.fn()} onOpenThread={onOpenThread} onReadThread={vi.fn()} />)
 
-    expect(screen.getByLabelText('General has new activity')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /General\. three Unread/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Feedback/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Showcases/ })).not.toBeInTheDocument()
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search channels and active threads' }), { target: { value: 'onboarding' } })
     expect(screen.getAllByText('General onboarding conversation').length).toBeGreaterThan(0)
     fireEvent.click(screen.getAllByText('General onboarding conversation')[0]!)
@@ -48,5 +50,13 @@ describe('ChannelSidebar', () => {
     render(<ChannelSidebar selectedChannelId="general" activity={{}} messages={messages} readState={{ channels: {}, threads: {} }} onSelectChannel={vi.fn()} onOpenThread={vi.fn()} onReadThread={vi.fn()} />)
     expect(screen.getAllByText('General onboarding conversation').length).toBeGreaterThan(0)
     expect(screen.queryByText('Feedback-only conversation')).not.toBeInTheDocument()
+  })
+
+  it('labels General as read and falls back for an empty feed', () => {
+    const { rerender } = render(<ChannelSidebar selectedChannelId="general" activity={{ general: { latestActivity: '2026-07-24T10:10:00.000Z' } }} messages={messages} readState={{ channels: { general: '2026-07-24T10:10:00.000Z' }, threads: {} }} onSelectChannel={vi.fn()} onOpenThread={vi.fn()} onReadThread={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /General\. three Read/ })).toBeInTheDocument()
+
+    rerender(<ChannelSidebar selectedChannelId="general" activity={{}} messages={[]} readState={{ channels: {}, threads: {} }} onSelectChannel={vi.fn()} onOpenThread={vi.fn()} onReadThread={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'General. No messages yet. Read' })).toBeInTheDocument()
   })
 })

@@ -1,7 +1,7 @@
 import { Hash, MessageCircle, Search, X } from 'lucide-react'
 import { useMemo, useState, type RefObject } from 'react'
-import { COMMUNITY_CHANNELS, channelPath, type CommunityChannelId } from '../community/channels'
-import { findActiveThreads, sortCommunityChannels, type ActiveThread, type ChannelActivityMap } from '../community/channel-navigation'
+import { COMMUNITY_CHANNELS, DEFAULT_CHANNEL_ID, channelPath, type CommunityChannelId } from '../community/channels'
+import { findActiveThreads, type ActiveThread, type ChannelActivityMap } from '../community/channel-navigation'
 import type { RealtimeMessageRecord } from '../realtime/protocol'
 import { isActivityUnread, type LocalReadState } from '../services/read-state'
 
@@ -31,30 +31,40 @@ function threadMatches(thread: ActiveThread, query: string) {
   return haystack.includes(query.toLocaleLowerCase())
 }
 
+function messagePreview(message: RealtimeMessageRecord | undefined) {
+  if (!message) return 'No messages yet.'
+  if (message.text.trim()) return message.text.trim()
+  if (message.buildName?.trim()) return `Shared ${message.buildName.trim()}`
+  if (message.imageUrl) return 'Shared an image'
+  return 'Shared a build'
+}
+
 export function ChannelSidebar({ selectedChannelId, activity, messages, onSelectChannel, onOpenThread, onReadThread, readState, autoFocusSearch, searchInputRef }: ChannelSidebarProps) {
   const [query, setQuery] = useState('')
-  const channels = useMemo(() => sortCommunityChannels(activity).filter((channel) => {
-    const haystack = `${channel.name} ${channel.description}`.toLocaleLowerCase()
-    return haystack.includes(query.toLocaleLowerCase())
-  }), [activity, query])
-  const activeThreads = useMemo(() => findActiveThreads(messages, selectedChannelId).filter((thread) => threadMatches(thread, query)), [messages, query, selectedChannelId])
-  const hasResults = channels.length > 0 || activeThreads.length > 0
+  const general = COMMUNITY_CHANNELS.find((channel) => channel.id === DEFAULT_CHANNEL_ID)!
+  const latestMessage = useMemo(() => [...messages]
+    .filter((message) => message.channelId === DEFAULT_CHANNEL_ID)
+    .sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0], [messages])
+  const latestPreview = messagePreview(latestMessage)
+  const normalizedQuery = query.toLocaleLowerCase()
+  const showGeneral = `${general.name} ${latestPreview}`.toLocaleLowerCase().includes(normalizedQuery)
+  const activeThreads = useMemo(() => findActiveThreads(messages, DEFAULT_CHANNEL_ID).filter((thread) => threadMatches(thread, query)), [messages, query])
+  const hasResults = showGeneral || activeThreads.length > 0
+  const generalUnread = isActivityUnread(activity.general?.latestActivity, readState.channels.general)
 
   return <div className="channel-sidebar">
-    <div className="channel-sidebar__heading"><span>CHANNELS</span><small>{COMMUNITY_CHANNELS.length} rooms</small></div>
+    <div className="channel-sidebar__heading"><span>CHANNEL</span><small>Everything in one place</small></div>
     <label className="channel-sidebar__search">
       <Search size={14} aria-hidden="true" />
       <span className="sr-only">Search channels and active threads</span>
-      <input ref={searchInputRef} autoFocus={autoFocusSearch} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search channels" />
+      <input ref={searchInputRef} autoFocus={autoFocusSearch} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search General and threads" />
       {query && <button type="button" aria-label="Clear channel search" onClick={() => setQuery('')}><X size={13} /></button>}
     </label>
 
-    {channels.length > 0 && <nav className="channel-sidebar__list" aria-label="Channels">
-      {channels.map((channel) => {
-        const unread = isActivityUnread(activity[channel.id]?.latestActivity, readState.channels[channel.id])
-        return <button key={channel.id} type="button" className={channel.id === selectedChannelId ? 'is-active' : ''} aria-current={channel.id === selectedChannelId ? 'page' : undefined} onClick={() => onSelectChannel(channel.id)}>
-        <Hash size={14} aria-hidden="true" /><span><strong>{channel.name}</strong><small>{channel.description}</small></span>{unread && <i className="channel-sidebar__unread" aria-label={`${channel.name} has new activity`} />}
-        </button> })}
+    {showGeneral && <nav className="channel-sidebar__list" aria-label="Channels">
+      <button type="button" className={selectedChannelId === DEFAULT_CHANNEL_ID ? 'is-active' : ''} aria-current={selectedChannelId === DEFAULT_CHANNEL_ID ? 'page' : undefined} aria-label={`${general.name}. ${latestPreview} ${generalUnread ? 'Unread' : 'Read'}`} onClick={() => onSelectChannel(DEFAULT_CHANNEL_ID)}>
+        <Hash size={14} aria-hidden="true" /><span><strong>{general.name}</strong><small className={generalUnread ? 'is-unread' : undefined}>{latestPreview}</small></span>{generalUnread && <i className="channel-sidebar__unread" aria-hidden="true" />}
+      </button>
     </nav>}
 
     {activeThreads.length > 0 && <section className="channel-sidebar__threads" aria-label="Active Threads">
@@ -68,6 +78,6 @@ export function ChannelSidebar({ selectedChannelId, activity, messages, onSelect
     </section>}
 
     {!hasResults && <div className="channel-sidebar__empty" role="status"><Search size={18} /><strong>No matches</strong><p>Try a channel name, description, or active thread.</p></div>}
-    <a className="channel-sidebar__canonical" href={channelPath(selectedChannelId)}>#{selectedChannelId}</a>
+    <a className="channel-sidebar__canonical" href={channelPath(DEFAULT_CHANNEL_ID)}>#{DEFAULT_CHANNEL_ID}</a>
   </div>
 }
