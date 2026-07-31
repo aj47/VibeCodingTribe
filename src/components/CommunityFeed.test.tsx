@@ -288,6 +288,43 @@ describe('CommunityFeed post hierarchy', () => {
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: '', imageUrl: 'https://media.example/pasted.png', intent: 'chat' }))
   })
 
+  it('shows message-shaped placeholders until the initial snapshot loads', () => {
+    const { container } = render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[]}
+      messagesLoaded={false}
+      participants={[]}
+      onlineCount={0}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading messages…')
+    expect(container.querySelector('.community-posts')).toHaveAttribute('aria-busy', 'true')
+    expect(container.querySelectorAll('.community-skeleton-post')).toHaveLength(3)
+    expect(screen.queryByText('The workbench is quiet')).not.toBeInTheDocument()
+  })
+
   it('likes and unlikes posts and replies with accessible pressed states', () => {
     const onToggleLike = vi.fn()
     render(<CommunityFeed

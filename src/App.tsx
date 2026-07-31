@@ -67,6 +67,7 @@ export function App() {
   const [readState, setReadState] = useState<LocalReadState>(() => loadLocalReadState(profile.clientId))
   const [channelActivity, setChannelActivity] = useState<ChannelActivityMap>(() => Object.fromEntries(Object.entries(loadLocalChannelActivity(profile.clientId)).map(([id, latestActivity]) => [id, { latestActivity }])) as ChannelActivityMap)
   const [messages, setMessages] = useState<RealtimeMessageRecord[]>([])
+  const [messagesLoaded, setMessagesLoaded] = useState(false)
   const [knownProfiles, setKnownProfiles] = useState<RealtimeProfile[]>([])
   const [onlineProfiles, setOnlineProfiles] = useState<RealtimeProfile[]>([])
   const [onlineCount, setOnlineCount] = useState(0)
@@ -232,6 +233,7 @@ export function App() {
     if (surface !== 'community' || authChecking) return
     const activeSessionToken = authSession ? (getSessionToken() ?? sessionToken ?? undefined) : undefined
     setMessages([])
+    setMessagesLoaded(false)
     setOnlineProfiles([])
     setOnlineCount(0)
     const client = new RealtimeRoomClient(profile, {
@@ -239,6 +241,7 @@ export function App() {
       onEvent: (event) => {
         if (event.type === 'snapshot') {
           setMessages((current) => mergeMessages(current, event.messages))
+          setMessagesLoaded(true)
           rememberChannelActivity(event.messages, channelId)
           const latest = event.messages.reduce<string | undefined>((current, record) => !current || record.sentAt > current ? record.sentAt : current, undefined)
           markChannelRead(channelId, latest)
@@ -453,6 +456,7 @@ export function App() {
       canPost={canPost}
       authChecking={authChecking}
       messages={messages}
+      messagesLoaded={messagesLoaded}
       participants={participants}
       onlineCount={onlineCount}
       connectionStatus={connectionStatus}

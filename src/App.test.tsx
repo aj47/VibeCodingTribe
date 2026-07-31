@@ -29,7 +29,7 @@ describe('App community loop', () => {
 
     await waitFor(() => expect(window.location.pathname).toBe('/'))
     expect(screen.getByRole('region', { name: 'Community feed' })).toBeInTheDocument()
-    expect(screen.getByText(/conversation that used to live in Tribe Chat/i)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Loading messages…')
   })
 
   it('folds the former Missions view into General', () => {

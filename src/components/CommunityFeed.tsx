@@ -39,6 +39,7 @@ interface CommunityFeedProps {
   canPost: boolean
   authChecking: boolean
   messages: RealtimeMessageRecord[]
+  messagesLoaded?: boolean
   participants: Array<RealtimeProfile & { online: boolean }>
   onlineCount: number
   connectionStatus: 'connected' | 'syncing' | 'offline'
@@ -202,6 +203,38 @@ function CommunityLinkPreview({ message }: { message: Pick<RealtimeMessageRecord
   </a>
 }
 
+const MESSAGE_SKELETONS = [
+  { kind: 'chat', lines: ['86%', '62%'] },
+  { kind: 'showcase', lines: ['74%', '91%', '48%'] },
+  { kind: 'feedback', lines: ['92%', '68%'] },
+] as const
+
+function CommunityMessageSkeleton() {
+  return <div className="community-message-skeleton" role="status">
+    <span className="sr-only">Loading messages…</span>
+    <div aria-hidden="true">
+      {MESSAGE_SKELETONS.map((item, index) => <article className={`community-skeleton-post community-skeleton-post--${item.kind}`} key={item.kind}>
+        {item.kind !== 'chat' && <div className="community-skeleton-post__typebar"><span className="community-skeleton__shape" /><span className="community-skeleton__shape" /></div>}
+        <header>
+          <span className="community-skeleton__shape community-skeleton-post__avatar" />
+          <div>
+            <span className="community-skeleton__shape community-skeleton-post__author" style={{ width: index === 1 ? '112px' : '88px' }} />
+            <span className="community-skeleton__shape community-skeleton-post__meta" style={{ width: index === 2 ? '132px' : '108px' }} />
+          </div>
+        </header>
+        <div className="community-skeleton-post__copy">
+          {item.lines.map((width) => <span className="community-skeleton__shape" style={{ width }} key={width} />)}
+        </div>
+        <footer>
+          <span className="community-skeleton__shape" />
+          <span className="community-skeleton__shape" />
+          <span className="community-skeleton__shape" />
+        </footer>
+      </article>)}
+    </div>
+  </div>
+}
+
 export function CommunityFeed({
   profile,
   provider,
@@ -209,6 +242,7 @@ export function CommunityFeed({
   canPost,
   authChecking,
   messages,
+  messagesLoaded,
   participants,
   onlineCount,
   connectionStatus,
@@ -293,6 +327,8 @@ export function CommunityFeed({
     return () => cancelAnimationFrame(frame)
   }, [replyingTo, threadId])
   const activeThreads = useMemo(() => findActiveThreads(messages, channelId), [channelId, messages])
+  const initialMessagesLoaded = messagesLoaded ?? connectionStatus !== 'syncing'
+  const messagesLoading = !initialMessagesLoaded && messages.length === 0 && connectionStatus !== 'offline'
   useEffect(() => {
     if (!threadId || !replies.has(threadId)) return
     const latestReply = [...(replies.get(threadId) ?? [])].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]
@@ -452,8 +488,8 @@ export function CommunityFeed({
           {localPreviewAvailable && <button className="community-join-preview" type="button" onClick={onStartLocalPreview}>Start local preview <ArrowUpRight size={14} /></button>}
         </div></section>}
 
-        <div className="community-posts">
-          {topLevel.length === 0 ? <div className="community-empty"><Radio size={24} /><h2>{missionsOnly ? 'No one is stuck right now' : 'The workbench is quiet'}</h2><p>{missionsOnly ? 'Share a rough edge of your own or check back after the next build session.' : 'Real updates from builders will appear here—including the conversation that used to live in Tribe Chat.'}</p></div> : topLevel.map((message) => {
+        <div className="community-posts" aria-busy={messagesLoading}>
+          {messagesLoading ? <CommunityMessageSkeleton /> : topLevel.length === 0 ? <div className="community-empty"><Radio size={24} /><h2>{missionsOnly ? 'No one is stuck right now' : 'The workbench is quiet'}</h2><p>{missionsOnly ? 'Share a rough edge of your own or check back after the next build session.' : 'Real updates from builders will appear here—including the conversation that used to live in Tribe Chat.'}</p></div> : topLevel.map((message) => {
             const kind = postKind(message)
             const meta = POST_META[kind]
             const PostIcon = meta.icon
