@@ -23,7 +23,9 @@ export interface HumanAccount extends PublicHumanProfile {
 interface AgentEnrollmentRecord {
   id: string
   name: string
-  callbackUrl: string
+  callbackUrl?: string
+  credentialId: string
+  claimSecretHash: string
   createdAt: string
   expiresAt: string
   status: 'pending' | 'authorized' | 'delivered' | 'failed'
@@ -38,7 +40,7 @@ interface AgentCredentialRecord {
   name: string
   handle: string
   avatarUrl?: string
-  callbackUrl: string
+  callbackUrl?: string
   keyPrefix: string
   secretHash: string
   createdAt: string
@@ -116,6 +118,7 @@ function credentialSummary(credential: AgentCredentialRecord) {
     name: credential.name,
     handle,
     ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}),
+    canRotate: Boolean(credential.callbackUrl),
     keyPrefix: credential.keyPrefix,
     createdAt: credential.createdAt,
     ...(credential.lastUsedAt ? { lastUsedAt: credential.lastUsedAt } : {}),
@@ -200,7 +203,8 @@ export class AccountStore implements DurableObject {
     if (url.pathname === '/agent-profile' && request.method === 'GET') return this.getAgentProfile(url.searchParams.get('agentId'))
     if (url.pathname === '/profile' && request.method === 'PATCH') return this.updateProfile(body)
     if (url.pathname === '/enrollments' && request.method === 'POST') return this.createEnrollment(body)
-    if (url.pathname.startsWith('/enrollments/') && request.method === 'GET') return this.getEnrollment(url.pathname.split('/')[2] ?? '')
+    if (url.pathname.match(/^\/enrollments\/[^/]+$/) && request.method === 'GET') return this.getEnrollment(url.pathname.split('/')[2] ?? '')
+    if (url.pathname.match(/^\/enrollments\/[^/]+\/claim$/) && request.method === 'POST') return this.claimEnrollment(url.pathname.split('/')[2] ?? '', body)
     if (url.pathname.match(/^\/enrollments\/[^/]+\/authorize$/) && request.method === 'POST') return this.authorizeEnrollment(url.pathname.split('/')[2] ?? '', body)
     if (url.pathname === '/credentials/authenticate' && request.method === 'POST') return this.authenticateCredential(body)
     if (url.pathname === '/credentials' && request.method === 'GET') return this.listCredentials(url.searchParams.get('accountId'))
@@ -331,9 +335,9 @@ export class AccountStore implements DurableObject {
 
   private async createEnrollment(body: Record<string, unknown> | null) {
     const name = safeString(body?.name, 64)
-    const callbackUrl = validCallback(body?.callbackUrl)
+    const callbackUrl = body?.callbackUrl === undefined ? undefined : validCallback(body.callbackUrl)
     const avatarUrl = validAgentAvatarUrl(body?.avatarUrl)
-    if (!name || !callbackUrl || avatarUrl === null) return json({ error: 'A name, public HTTPS callback URL, and optional HTTPS avatar URL are required' }, 400)
+    if (!name || callbackUrl === null || avatarUrl === null) return json({ error: 'A name and optional HTTPS callback and avatar URLs are required' }, 400)
     const requesterKey = safeString(body?.requesterKey, 160) || 'unknown'
     const rateKey = `enrollment-rate:${await sha256(requesterKey)}`
     const previousRate = await this.state.storage.get<{ startedAt: number; count: number }>(rateKey)
@@ -344,17 +348,30 @@ export class AccountStore implements DurableObject {
     rate.count += 1
     await this.state.storage.put(rateKey, rate)
     const now = new Date()
+    const claimSecret = randomToken(32)
     const enrollment: AgentEnrollmentRecord = {
       id: randomToken(24),
       name,
-      callbackUrl,
+      ...(callbackUrl ? { callbackUrl } : {}),
+      credentialId: randomToken(12),
+      claimSecretHash: await sha256(claimSecret),
       ...(avatarUrl ? { avatarUrl } : {}),
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
       status: 'pending',
     }
     await this.state.storage.put(`${ENROLLMENT_PREFIX}${enrollment.id}`, enrollment)
-    return json({ enrollment }, 201)
+    return json({
+      enrollment: {
+        id: enrollment.id,
+        name: enrollment.name,
+        ...(enrollment.avatarUrl ? { avatarUrl: enrollment.avatarUrl } : {}),
+        createdAt: enrollment.createdAt,
+        expiresAt: enrollment.expiresAt,
+        status: enrollment.status,
+      },
+      claimToken: `vct_enroll_${enrollment.id}_${claimSecret}`,
+    }, 201)
   }
 
   private async getEnrollment(id: string) {
@@ -363,7 +380,7 @@ export class AccountStore implements DurableObject {
     return json({ enrollment: {
       id: enrollment.id,
       name: enrollment.name,
-      callbackUrl: new URL(enrollment.callbackUrl).origin,
+      ...(enrollment.callbackUrl ? { callbackUrl: new URL(enrollment.callbackUrl).origin } : {}),
       ...(enrollment.avatarUrl ? { avatarUrl: enrollment.avatarUrl } : {}),
       createdAt: enrollment.createdAt,
       expiresAt: enrollment.expiresAt,
@@ -380,11 +397,19 @@ export class AccountStore implements DurableObject {
     if (!enrollment || new Date(enrollment.expiresAt).getTime() <= Date.now()) return json({ error: 'This authorization request expired' }, 410)
     if (!account) return json({ error: 'Human account not found' }, 404)
     if (enrollment.status !== 'pending') return json({ error: 'This authorization request was already used' }, 409)
-    const issued = await this.issueCredential(account, enrollment.name, enrollment.callbackUrl, enrollment.avatarUrl)
+    const issued = enrollment.callbackUrl
+      ? await this.issueCredential(account, enrollment.name, enrollment.callbackUrl, enrollment.avatarUrl)
+      : await this.issueCredential(account, enrollment.name, undefined, enrollment.avatarUrl, {
+        id: enrollment.credentialId,
+        secretHash: enrollment.claimSecretHash,
+      })
     const credential = issued.credential
     enrollment.ownerAccountId = account.id
     enrollment.status = 'authorized'
     await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
+    if (!enrollment.callbackUrl) {
+      return json({ enrollment: { id, name: enrollment.name, status: enrollment.status }, credential: credentialSummary(credential) })
+    }
     try {
       const response = await fetch(enrollment.callbackUrl, {
         method: 'POST',
@@ -413,19 +438,45 @@ export class AccountStore implements DurableObject {
     }
   }
 
-  private async issueCredential(account: HumanAccount, name: string, callbackUrl: string, avatarUrl?: string) {
-    const id = randomToken(12)
-    const secret = randomToken(32)
-    const apiKey = `vct_agent_${id}_${secret}`
+  private async claimEnrollment(id: string, body: Record<string, unknown> | null) {
+    const claimToken = typeof body?.claimToken === 'string' ? body.claimToken : ''
+    const match = claimToken.match(/^vct_enroll_([A-Za-z0-9_-]{32})_([A-Za-z0-9_-]{43})$/)
+    if (!match || match[1] !== id) return json({ error: 'Invalid claim token' }, 401)
+    const enrollment = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
+    if (!enrollment || enrollment.claimSecretHash !== await sha256(match[2]!)) return json({ error: 'Invalid claim token' }, 401)
+    if (new Date(enrollment.expiresAt).getTime() <= Date.now() && enrollment.status === 'pending') return json({ error: 'This authorization request expired' }, 410)
+    if (enrollment.status === 'pending') return json({ enrollment: { id, status: 'pending' } }, 202)
+    if (enrollment.status === 'delivered') return json({ error: 'This credential was already claimed' }, 410)
+    if (enrollment.status !== 'authorized' || !enrollment.ownerAccountId) return json({ error: 'This credential is unavailable' }, 409)
+    const [credential, account] = await Promise.all([
+      this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${enrollment.credentialId}`),
+      this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${enrollment.ownerAccountId}`),
+    ])
+    if (!credential || !account) return json({ error: 'This credential is unavailable' }, 409)
+    enrollment.status = 'delivered'
+    await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
+    return json({
+      type: 'vibecodingtribe.agent.authorized',
+      enrollmentId: id,
+      apiKey: `vct_agent_${credential.id}_${match[2]}`,
+      agent: { id: credential.id, name: credential.name, handle: credential.handle, ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}) },
+      owner: publicProfile(account),
+    })
+  }
+
+  private async issueCredential(account: HumanAccount, name: string, callbackUrl?: string, avatarUrl?: string, preset?: { id: string; secretHash: string }) {
+    const id = preset?.id ?? randomToken(12)
+    const secret = preset ? undefined : randomToken(32)
+    const apiKey = secret ? `vct_agent_${id}_${secret}` : undefined
     const credential: AgentCredentialRecord = {
       id,
       accountId: account.id,
       name,
       handle: agentHandle(name, id),
       ...(avatarUrl ? { avatarUrl } : {}),
-      callbackUrl,
+      ...(callbackUrl ? { callbackUrl } : {}),
       keyPrefix: `vct_agent_${id.slice(0, 6)}…`,
-      secretHash: await sha256(secret),
+      secretHash: preset?.secretHash ?? await sha256(secret!),
       createdAt: new Date().toISOString(),
       rateWindowStartedAt: Date.now(),
       rateWindowCount: 0,
@@ -496,12 +547,13 @@ export class AccountStore implements DurableObject {
     if (credential.revokedAt) return json({ error: 'Revoked keys cannot be rotated' }, 409)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
     if (!account) return json({ error: 'Account not found' }, 404)
+    if (!credential.callbackUrl) return json({ error: 'Callback-free credentials must be replaced with a new enrollment.' }, 409)
     const issued = await this.issueCredential(account, credential.name, credential.callbackUrl, credential.avatarUrl)
     try {
       const response = await fetch(credential.callbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'User-Agent': 'VibeCodingTribe-Agent-Rotation/1.0' },
-        body: JSON.stringify({ type: 'vibecodingtribe.agent.key_rotated', apiKey: issued.apiKey, agent: { id: issued.credential.id, name: issued.credential.name, handle: issued.credential.handle || agentHandle(issued.credential.name, issued.credential.id), ...(issued.credential.avatarUrl ? { avatarUrl: issued.credential.avatarUrl } : {}) } }),
+        body: JSON.stringify({ type: 'vibecodingtribe.agent.key_rotated', apiKey: issued.apiKey!, agent: { id: issued.credential.id, name: issued.credential.name, handle: issued.credential.handle || agentHandle(issued.credential.name, issued.credential.id), ...(issued.credential.avatarUrl ? { avatarUrl: issued.credential.avatarUrl } : {}) } }),
       })
       if (!response.ok) throw new Error('Callback rejected the rotated key')
       credential.revokedAt = new Date().toISOString()
