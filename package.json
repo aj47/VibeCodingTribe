@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "dev:docs": "vite --config vite.docs.config.ts",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/prepare-sites-dist.mjs",
     "build:docs": "tsc -p tsconfig.docs.json && vite build --config vite.docs.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
