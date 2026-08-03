@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { handleAuthRequest, linkedinProfileUrlFromClaims, type AuthEnv } from './auth'
+import { describe, expect, it, vi } from 'vitest'
+import { activityDigestOptOutUrl, handleAuthRequest, linkedinProfileUrlFromClaims, type AuthEnv } from './auth'
 
 const env: AuthEnv = {
   ALLOWED_ORIGINS: 'http://localhost:4173,https://vibecodingtribe.com',
@@ -54,5 +54,34 @@ describe('OAuth routes', () => {
     )
 
     expect(response?.status).toBe(503)
+  })
+
+  it('uses a signed, expiring recipient link to disable only daily activity digests', async () => {
+    const accountFetch = vi.fn(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe('/notification-preferences')
+      expect(request.method).toBe('PATCH')
+      expect(await request.json()).toEqual({ accountId: 'human_ada', activityDigest: false })
+      return Response.json({ preferences: { activityDigest: false } })
+    })
+    const unsubscribeEnv: AuthEnv = {
+      ...env,
+      EMAIL_UNSUBSCRIBE_ORIGIN: 'https://worker.example',
+      ACCOUNTS: { idFromName: () => 'accounts', get: () => ({ fetch: accountFetch }) } as unknown as DurableObjectNamespace,
+    }
+    const url = await activityDigestOptOutUrl(unsubscribeEnv, 'human_ada')
+    const preview = await handleAuthRequest(new Request(url), unsubscribeEnv)
+    expect(preview?.status).toBe(200)
+    expect(await preview?.text()).toContain('Stop daily activity digests?')
+
+    const confirmed = await handleAuthRequest(new Request(url, { method: 'POST' }), unsubscribeEnv)
+    expect(confirmed?.status).toBe(200)
+    expect(await confirmed?.text()).toContain('Daily activity digests are off')
+    expect(accountFetch).toHaveBeenCalledOnce()
+
+    const expired = await activityDigestOptOutUrl(unsubscribeEnv, 'human_ada', 0)
+    expect((await handleAuthRequest(new Request(expired), unsubscribeEnv))?.status).toBe(400)
+    const tampered = new URL(url)
+    tampered.searchParams.set('token', `${tampered.searchParams.get('token')}x`)
+    expect((await handleAuthRequest(new Request(tampered), unsubscribeEnv))?.status).toBe(400)
   })
 })

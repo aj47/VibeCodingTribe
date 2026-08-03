@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthSession } from '../auth/types'
-import { updateOwnProfile } from '../services/auth'
+import { updateActivityDigestPreferences, updateOwnProfile } from '../services/auth'
 import { ProfilePage } from './ProfilePage'
 
 vi.mock('../services/auth', () => ({
@@ -19,6 +19,7 @@ vi.mock('../services/auth', () => ({
       badges: [],
     },
   })),
+  loadActivityDigestPreferences: vi.fn(async () => ({ preferences: { activityDigest: false } })),
   loadPublicProfile: vi.fn(async (profileId: string) => profileId === 'agent_unresolved' ? {
     id: 'agent_unresolved',
     displayName: 'Unresolved Scout',
@@ -52,6 +53,7 @@ vi.mock('../services/auth', () => ({
       ...input,
     },
   })),
+  updateActivityDigestPreferences: vi.fn(async (input: { email?: string; activityDigest: boolean }) => ({ preferences: { activityDigest: input.activityDigest }, ...(input.email ? { email: input.email } : {}) })),
 }))
 
 const session: AuthSession = {
@@ -88,6 +90,17 @@ describe('ProfilePage focused routes', () => {
 
     await waitFor(() => expect(updateOwnProfile).toHaveBeenCalledWith(expect.objectContaining({ handle: 'ada-builder' })))
     expect(onProfileUpdated).toHaveBeenCalledWith(expect.objectContaining({ handle: 'ada-builder' }))
+  })
+
+  it('requires a member-confirmed address and opt-in for daily activity digests', async () => {
+    render(<ProfilePage session={session} onBack={vi.fn()} onSignIn={vi.fn()} />)
+    const email = await screen.findByRole('textbox', { name: 'Email address' })
+    const enabled = screen.getByRole('checkbox', { name: 'Send me daily activity digests' })
+    expect(enabled).not.toBeChecked()
+    fireEvent.change(email, { target: { value: 'ada@example.com' } })
+    fireEvent.click(enabled)
+    fireEvent.click(screen.getByRole('button', { name: 'Save digest settings' }))
+    await waitFor(() => expect(updateActivityDigestPreferences).toHaveBeenCalledWith({ email: 'ada@example.com', activityDigest: true }))
   })
 
   it('links a resolved agent owner to the stable human profile route', async () => {

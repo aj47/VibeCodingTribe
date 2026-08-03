@@ -162,4 +162,44 @@ describe('AccountStore', () => {
     expect((await updated.json() as { profile: { handle: string } }).profile.handle).toBe('second-builder-v2')
     expect(first.id).not.toBe(second.id)
   })
+
+  it('keeps digest preparation idempotent and marks event delivery only on completion', async () => {
+    const store = createStore()
+    const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-digest', displayName: 'Digest Builder', handle: 'digest-builder', email: 'digest@example.com',
+    } }))
+    const { account } = await identityResponse.json() as { account: { id: string } }
+    await store.fetch(request('/notification-preferences', { accountId: account.id, email: 'digest@example.com', activityDigest: true }, 'PATCH'))
+    const event = {
+      id: 'activity:reply:general:reply-1', kind: 'reply', channelId: 'general', parentId: 'post-1',
+      createdAt: '2026-08-01T10:00:00.000Z', actorDisplayName: 'Someone', parentTitle: 'Post', preview: 'A reply', deepLink: 'https://vibecodingtribe.com/?thread=post-1',
+    }
+
+    const prepared = await store.fetch(request('/internal/activity-digest/prepare', { accountId: account.id, day: '2026-08-01', events: [event] }))
+    const first = await prepared.json() as { send: boolean; idempotencyKey: string; events: unknown[] }
+    expect(first).toMatchObject({ send: true, idempotencyKey: `activity-digest:${account.id}:2026-08-01`, events: [event] })
+
+    const replayed = await store.fetch(request('/internal/activity-digest/prepare', { accountId: account.id, day: '2026-08-01', events: [event] }))
+    expect(await replayed.json()).toEqual(expect.objectContaining({ send: true, idempotencyKey: first.idempotencyKey, events: [event] }))
+
+    const completed = await store.fetch(request('/internal/activity-digest/complete', { accountId: account.id, day: '2026-08-01', idempotencyKey: first.idempotencyKey }))
+    expect(await completed.json()).toEqual({ delivered: true, eventCount: 1 })
+    const alreadyDelivered = await store.fetch(request('/internal/activity-digest/prepare', { accountId: account.id, day: '2026-08-02', events: [event] }))
+    expect(await alreadyDelivered.json()).toEqual({ send: false, reason: 'empty' })
+  })
+
+  it('persists the activity digest preference with a safe default', async () => {
+    const store = createStore()
+    const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-preference', displayName: 'Preference Builder', handle: 'preference-builder',
+    } }))
+    const { account } = await identityResponse.json() as { account: { id: string } }
+    expect(await (await store.fetch(request(`/notification-preferences?accountId=${account.id}`))).json()).toEqual({ preferences: { activityDigest: false } })
+    const rejected = await store.fetch(request('/notification-preferences', { accountId: account.id, activityDigest: true }, 'PATCH'))
+    expect(rejected.status).toBe(400)
+    const updated = await store.fetch(request('/notification-preferences', { accountId: account.id, email: 'preference@example.com', activityDigest: true }, 'PATCH'))
+    expect(await updated.json()).toEqual({ preferences: { activityDigest: true }, email: 'preference@example.com' })
+    const disabled = await store.fetch(request('/notification-preferences', { accountId: account.id, activityDigest: false }, 'PATCH'))
+    expect(await disabled.json()).toEqual({ preferences: { activityDigest: false }, email: 'preference@example.com' })
+  })
 })

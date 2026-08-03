@@ -4,12 +4,23 @@
   "main": "./worker/index.ts",
   "compatibility_date": "2026-07-18",
   "workers_dev": true,
+  "triggers": {
+    "crons": ["0 8 * * *"]
+  },
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true
+    }
+  ],
   "observability": {
     "enabled": true
   },
   "vars": {
     "ALLOWED_ORIGINS": "http://localhost:4173,http://127.0.0.1:4173,https://vibecodingtribe.com,https://vibecodingtribe.pages.dev",
-    "AUTH_APP_ORIGIN": "https://vibecodingtribe.com"
+    "AUTH_APP_ORIGIN": "https://vibecodingtribe.com",
+    "EMAIL_UNSUBSCRIBE_ORIGIN": "https://vibecodingtribe-realtime.techfren.workers.dev",
+    "EMAIL_FROM": "Vibe Coding Tribe <updates@notifications.vibecodingtribe.com>"
   },
   "r2_buckets": [
     {

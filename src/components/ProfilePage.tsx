@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowUpRight, BadgeCheck, Github, Globe2, Linkedin, LockKeyhole, MessageCircle, Rocket, Save, ShieldCheck, Sparkles, UserRound } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import type { AuthProvider, AuthSession, PublicAgentProfile, PublicHumanProfile, PublicProfile } from '../auth/types'
-import { beginLinkOAuth, loadOwnProfile, loadPublicProfile, updateOwnProfile } from '../services/auth'
+import { beginLinkOAuth, loadActivityDigestPreferences, loadOwnProfile, loadPublicProfile, updateActivityDigestPreferences, updateOwnProfile } from '../services/auth'
 
 interface ProfilePageProps {
   session: AuthSession | null
@@ -27,14 +27,19 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
   const [draft, setDraft] = useState({ displayName: '', handle: '', headline: '', bio: '', githubUrl: '', linkedinUrl: '', websiteUrl: '' })
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [notificationDraft, setNotificationDraft] = useState({ email: '', activityDigest: false })
+  const [notificationSaved, setNotificationSaved] = useState(false)
 
   useEffect(() => {
     if (ownProfile && !session) return
     let active = true
-    const request = ownProfile ? loadOwnProfile().then((value) => value.profile) : loadPublicProfile(profileId!)
-    void request.then((value) => {
+    const request = ownProfile
+      ? Promise.all([loadOwnProfile().then((value) => value.profile), loadActivityDigestPreferences()])
+      : loadPublicProfile(profileId!).then((profile) => [profile, null] as const)
+    void request.then(([value, notifications]) => {
       if (!active) return
       setProfile(value)
+      if (notifications) setNotificationDraft({ email: notifications.email ?? '', activityDigest: notifications.preferences.activityDigest })
       if ('actorType' in value) return
       setDraft({ displayName: value.displayName, handle: value.handle, headline: value.headline ?? '', bio: value.bio ?? '', githubUrl: value.githubUrl ?? '', linkedinUrl: value.linkedinUrl ?? '', websiteUrl: value.websiteUrl ?? '' })
     }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : 'Profile could not be loaded') })
@@ -53,6 +58,20 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
       window.setTimeout(() => setSaved(false), 2200)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Profile could not be saved')
+    }
+  }
+
+  async function submitNotifications(event: FormEvent) {
+    event.preventDefault()
+    setError(null)
+    setNotificationSaved(false)
+    try {
+      const result = await updateActivityDigestPreferences(notificationDraft)
+      setNotificationDraft({ email: result.email ?? notificationDraft.email, activityDigest: result.preferences.activityDigest })
+      setNotificationSaved(true)
+      window.setTimeout(() => setNotificationSaved(false), 2200)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Digest settings could not be saved')
     }
   }
 
@@ -88,6 +107,12 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
         <div className="profile-link-field"><Linkedin size={18} /><label htmlFor="profile-linkedin"><span>LinkedIn profile</span><small>{humanProfile.linkedProviders.includes('linkedin') ? 'Verified sign-in attached' : 'Public profile link'}</small></label><input id="profile-linkedin" type="url" placeholder="https://www.linkedin.com/in/username" value={draft.linkedinUrl} onChange={(event) => setDraft({ ...draft, linkedinUrl: event.target.value })} />{!humanProfile.linkedProviders.includes('linkedin') && <button type="button" onClick={() => void link('linkedin')}>Verify</button>}</div>
         <div className="profile-link-field"><Globe2 size={18} /><label htmlFor="profile-website"><span>Website or portfolio</span><small>Your public home on the web</small></label><input id="profile-website" type="url" placeholder="https://your-site.com" value={draft.websiteUrl} onChange={(event) => setDraft({ ...draft, websiteUrl: event.target.value })} /></div>
         <footer><span>{saved ? 'Profile saved.' : 'These links are visible when someone opens your profile.'}</span><button type="submit"><Save size={14} /> Save profile</button></footer>
+      </form><form className="profile-notifications" onSubmit={submitNotifications}>
+        <div><span>ACTIVITY DELIVERY</span><h2>Daily activity digest</h2><p>Get one daily email only when people reply to your posts or comments, or leave feedback on your showcase or feedback request.</p></div>
+        <div className="profile-field"><label htmlFor="digest-email">Email address</label><input id="digest-email" type="email" autoComplete="email" placeholder="you@example.com" value={notificationDraft.email} onChange={(event) => setNotificationDraft({ ...notificationDraft, email: event.target.value })} /></div>
+        <label className="profile-notifications__choice"><input type="checkbox" checked={notificationDraft.activityDigest} onChange={(event) => setNotificationDraft({ ...notificationDraft, activityDigest: event.target.checked })} /> <span>Send me daily activity digests</span></label>
+        <small>Transactional activity only, never marketing. You can stop these emails here or from any digest.</small>
+        <button type="submit"><Save size={14} /> {notificationSaved ? 'Digest settings saved' : 'Save digest settings'}</button>
       </form><BadgeCollection profile={humanProfile} /></> : humanProfile ? <><div className="public-profile-links">
         <p>{humanProfile.bio || humanProfile.headline || 'Builder on VibeCodingTribe'}</p>
         <div>{humanProfile.githubUrl && <a href={humanProfile.githubUrl} target="_blank" rel="noreferrer"><Github size={17} /> GitHub <ArrowUpRight size={13} /></a>}{humanProfile.linkedinUrl && <a href={humanProfile.linkedinUrl} target="_blank" rel="noreferrer"><Linkedin size={17} /> LinkedIn <ArrowUpRight size={13} /></a>}{humanProfile.websiteUrl && <a href={humanProfile.websiteUrl} target="_blank" rel="noreferrer"><Globe2 size={17} /> Website <ArrowUpRight size={13} /></a>}</div>

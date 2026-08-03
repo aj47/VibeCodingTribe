@@ -12,18 +12,26 @@ import {
 import { channelRoomName, DEFAULT_CHANNEL_ID, isCommunityChannelId, normalizeCommunityChannelId, type CommunityChannelId } from '../src/community/channels'
 import { authenticateRequest, handleAuthRequest, realtimeClientId, type AuthEnv } from './auth'
 import { accountRequest } from './auth'
+import { activityDigestOptOutUrl } from './auth'
 import type { AgentAuthResult } from './accounts'
 import type { ExchangeActor } from './exchange'
 import type { PublicHumanProfile } from '../src/auth/types'
+import { activityDigestEmail, CloudflareEmailProvider, ResendEmailProvider, type CloudflareEmailBinding, type TransactionalEmailProvider } from './email'
+import { collectActivityDigestEvents, digestDay, type DigestRecipient } from './notifications'
 export { ExchangeStore } from './exchange'
 export { AccountStore } from './accounts'
 
-interface Env extends AuthEnv {
+export interface Env extends AuthEnv {
   LIVE_ROOM: DurableObjectNamespace
   EXCHANGE_STATE: DurableObjectNamespace
   ACCOUNTS: DurableObjectNamespace
   MEDIA?: R2Bucket
   LOCAL_PREVIEW?: string
+  RESEND_API_KEY?: string
+  EMAIL_FROM?: string
+  EMAIL_REPLY_TO?: string
+  EMAIL_UNSUBSCRIBE_ORIGIN?: string
+  EMAIL?: CloudflareEmailBinding
 }
 
 interface ConnectionAttachment extends RealtimeProfile {
@@ -356,7 +364,7 @@ function withApiHeaders(response: Response, request: Request, env: Env, auth?: A
 async function handleAccountApi(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url)
   const cors = exchangeCorsHeaders(request, env)
-  if (request.method === 'OPTIONS' && (url.pathname.startsWith('/api/agents') || url.pathname.startsWith('/api/profile'))) {
+  if (request.method === 'OPTIONS' && (url.pathname.startsWith('/api/agents') || url.pathname.startsWith('/api/profile') || url.pathname === '/api/notification-preferences')) {
     return new Response(null, { status: 204, headers: cors })
   }
   if (url.pathname === '/api/agent-bootstrap' && request.method === 'GET') {
@@ -416,6 +424,14 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
     const result = await response.json() as { profile?: PublicHumanProfile }
     if (result.profile) await propagateProfileUpdate(env, result.profile)
     return withApiHeaders(Response.json(result, { status: response.status }), request, env)
+  }
+  if (url.pathname === '/api/notification-preferences' && ['GET', 'PATCH'].includes(request.method)) {
+    const claims = await authenticateRequest(request, env)
+    if (!claims) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+    const accountId = claims.accountId ?? `${claims.provider}:${claims.subject}`
+    if (request.method === 'GET') return withApiHeaders(await accountRequest(env, `/notification-preferences?accountId=${encodeURIComponent(accountId)}`), request, env)
+    const payload = await request.json().catch(() => ({})) as Record<string, unknown>
+    return withApiHeaders(await accountRequest(env, '/notification-preferences', { ...payload, accountId }, 'PATCH'), request, env)
   }
   const publicProfileMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)$/)
   if (publicProfileMatch && request.method === 'GET') {
@@ -541,6 +557,74 @@ export async function migrateLegacyHistory(env: Env) {
   return { status: 'migrated', channels: imported, count: records.length }
 }
 
+function createActivityDigestProvider(env: Env): TransactionalEmailProvider | null {
+  if (env.EMAIL && env.EMAIL_FROM) return new CloudflareEmailProvider({ binding: env.EMAIL, from: env.EMAIL_FROM, ...(env.EMAIL_REPLY_TO ? { replyTo: env.EMAIL_REPLY_TO } : {}) })
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM) return null
+  return new ResendEmailProvider({ apiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM, ...(env.EMAIL_REPLY_TO ? { replyTo: env.EMAIL_REPLY_TO } : {}) })
+}
+
+async function exportedChannelMessages(env: Env) {
+  const channels = ['general', 'showcases', 'feedback'] as const
+  const responses = await Promise.all(channels.map(async (channelId) => {
+    const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
+    const response = await env.LIVE_ROOM.get(roomId).fetch(new Request(`https://internal/internal/export?channelId=${channelId}`))
+    if (!response.ok) throw new Error(`${channelId} activity export failed with ${response.status}`)
+    const result = await response.json() as { messages?: RealtimeMessageRecord[] }
+    return result.messages ?? []
+  }))
+  return responses.flat()
+}
+
+export async function runDailyActivityDigest(env: Env, now = new Date(), provider = createActivityDigestProvider(env)) {
+  if (!provider || !env.ACCOUNTS) return { sent: 0, failed: 0, skipped: 'email-provider-not-configured' as const }
+  const recipientsResponse = await accountRequest(env, '/internal/notification-recipients')
+  if (!recipientsResponse.ok) throw new Error(`Notification recipient lookup failed with ${recipientsResponse.status}`)
+  const { recipients } = await recipientsResponse.json() as { recipients: DigestRecipient[] }
+  if (!recipients.length) return { sent: 0, failed: 0 }
+  const messages = await exportedChannelMessages(env)
+  const day = digestDay(now)
+  let sent = 0
+  let failed = 0
+  for (const recipient of recipients) {
+    const candidates = collectActivityDigestEvents(messages, recipient, env.AUTH_APP_ORIGIN)
+    const preparedResponse = await accountRequest(env, '/internal/activity-digest/prepare', {
+      accountId: recipient.accountId,
+      day,
+      events: candidates,
+    })
+    if (!preparedResponse.ok) {
+      failed += 1
+      console.error('Activity digest preparation failed', recipient.accountId, preparedResponse.status)
+      continue
+    }
+    const prepared = await preparedResponse.json() as {
+      send?: boolean
+      accountId?: string
+      email?: string
+      displayName?: string
+      idempotencyKey?: string
+      events?: typeof candidates
+    }
+    if (!prepared.send || !prepared.email || !prepared.accountId || !prepared.idempotencyKey || !prepared.events?.length) continue
+    try {
+      const unsubscribeUrl = await activityDigestOptOutUrl(env, prepared.accountId)
+      const email = activityDigestEmail(prepared.displayName ?? recipient.displayName, day, prepared.events, prepared.idempotencyKey, unsubscribeUrl)
+      await provider.send({ ...email, to: prepared.email })
+      const completed = await accountRequest(env, '/internal/activity-digest/complete', {
+        accountId: prepared.accountId,
+        day,
+        idempotencyKey: prepared.idempotencyKey,
+      })
+      if (!completed.ok) throw new Error(`Digest completion failed with ${completed.status}`)
+      sent += 1
+    } catch (error) {
+      failed += 1
+      console.error('Activity digest delivery failed', recipient.accountId, error)
+    }
+  }
+  return { sent, failed }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
@@ -586,6 +670,9 @@ export default {
     roomUrl.searchParams.set('channelId', channelId)
     const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
     return env.LIVE_ROOM.get(roomId).fetch(roomRequest)
+  },
+  async scheduled(controller: ScheduledController, env: Env) {
+    await runDailyActivityDigest(env, new Date(controller.scheduledTime))
   },
 } satisfies ExportedHandler<Env>
 

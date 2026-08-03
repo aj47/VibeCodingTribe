@@ -4,3 +4,7 @@ GITHUB_CLIENT_SECRET=replace-with-github-oauth-client-secret
 LINKEDIN_CLIENT_ID=replace-with-linkedin-client-id
 LINKEDIN_CLIENT_SECRET=replace-with-linkedin-client-secret
 AUTH_APP_ORIGIN=http://localhost:4173
+RESEND_API_KEY=replace-with-resend-api-key
+EMAIL_FROM=Vibe Coding Tribe <notifications@mail.example.com>
+EMAIL_UNSUBSCRIBE_ORIGIN=http://localhost:8787
+# EMAIL_REPLY_TO=hello@example.com
