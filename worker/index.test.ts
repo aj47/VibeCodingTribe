@@ -186,6 +186,27 @@ describe('public room access', () => {
     expect(result.authorizationUrl).toBe('https://vibecodingtribe.com/agents/authorize/enrollment_12345678')
   })
 
+  it('publishes a concrete credential storage and verification contract', async () => {
+    const response = await worker.fetch(new Request('https://worker.example/api/agent-bootstrap'), {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+    } as never)
+    const result = await response.json() as {
+      steps: string[]
+      credentialStore: { path: string; directoryMode: string; fileMode: string; requiredFields: string[] }
+      security: { keyDelivery: string; verificationWindow: string }
+    }
+
+    expect(response.status).toBe(200)
+    expect(result.credentialStore).toMatchObject({
+      path: '~/.config/vibecodingtribe/auth.json',
+      directoryMode: '0700',
+      fileMode: '0600',
+    })
+    expect(result.credentialStore.requiredFields).toEqual(expect.arrayContaining(['apiKey', 'deliveryToken', 'deliveryUrl']))
+    expect(result.security).toMatchObject({ keyDelivery: 'retryable-until-verified', verificationWindow: '15 minutes after first claim' })
+    expect(result.steps.join(' ')).toContain('successful authenticated API request')
+  })
+
   it('preserves the since cursor when forwarding agent room reads', async () => {
     const roomFetch = vi.fn((incoming: Request) => Response.json({ forwardedUrl: incoming.url }))
     const accountFetch = vi.fn(async () => Response.json({
