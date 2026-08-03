@@ -26,6 +26,10 @@ function socket(channelId: 'general' | 'showcases' | 'feedback') {
   }
 }
 
+function agentHeaders() {
+  return { 'X-VCT-Agent-Actor': encodeURIComponent(JSON.stringify({ agent: { id: 'agent_1234567890123456' } })) }
+}
+
 describe('RealtimeRoom channel isolation', () => {
   it('migrates the legacy room into general without changing ids or thread parents', async () => {
     const legacyState = createState([{
@@ -166,5 +170,22 @@ describe('RealtimeRoom channel isolation', () => {
 
     expect(messages).toHaveLength(1)
     expect(messages[0]).toMatchObject({ id: 'feedback_parent_1', channelId: 'feedback', likedByClientIds: ['client_builder_1234'] })
+  })
+
+  it('filters agent reads by message id or timestamp and returns the next cursor', async () => {
+    const room = new RealtimeRoom(createState([
+      { id: 'agent_read_1', channelId: 'general', clientId: 'client_12345678', displayName: 'Builder', handle: 'builder', avatarColor: '#657c54', text: 'first', sentAt: '2026-08-03T10:00:00.000Z' },
+      { id: 'agent_read_2', channelId: 'general', clientId: 'client_12345678', displayName: 'Builder', handle: 'builder', avatarColor: '#657c54', text: 'second', sentAt: '2026-08-03T10:01:00.000Z' },
+      { id: 'agent_read_3', channelId: 'general', clientId: 'client_12345678', displayName: 'Builder', handle: 'builder', avatarColor: '#657c54', text: 'third', sentAt: '2026-08-03T10:02:00.000Z' },
+    ]) as never)
+
+    const byId = await room.fetch(new Request('https://internal/internal/messages?channelId=general&since=agent_read_1', { headers: agentHeaders() }))
+    expect(await byId.json()).toMatchObject({ channelId: 'general', nextSince: 'agent_read_3', messages: [{ id: 'agent_read_2' }, { id: 'agent_read_3' }] })
+
+    const byTimestamp = await room.fetch(new Request('https://internal/internal/messages?channelId=general&since=2026-08-03T10:00:30.000Z', { headers: agentHeaders() }))
+    expect(await byTimestamp.json()).toMatchObject({ nextSince: 'agent_read_3', messages: [{ id: 'agent_read_2' }, { id: 'agent_read_3' }] })
+
+    const caughtUp = await room.fetch(new Request('https://internal/internal/messages?channelId=general&since=agent_read_3', { headers: agentHeaders() }))
+    expect(await caughtUp.json()).toEqual({ channelId: 'general', messages: [], nextSince: 'agent_read_3' })
   })
 })

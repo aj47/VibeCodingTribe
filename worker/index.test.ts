@@ -159,4 +159,35 @@ describe('public room access', () => {
     expect(result.authorizationUrl).toBe('https://vibecodingtribe.com/agents/authorize/enrollment_12345678')
   })
 
+  it('preserves the since cursor when forwarding agent room reads', async () => {
+    const roomFetch = vi.fn((incoming: Request) => Response.json({ forwardedUrl: incoming.url }))
+    const accountFetch = vi.fn(async () => Response.json({
+      agent: { id: 'agent_1234567890123456', name: 'Scout', handle: 'scout' },
+      owner: { id: 'human_owner', displayName: 'Owner', handle: 'owner', linkedProviders: ['github'] },
+      rateLimit: { limit: 60, remaining: 59, resetAt: '2026-08-03T11:00:00.000Z' },
+    }))
+    const env = {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+      LIVE_ROOM: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => ({ fetch: roomFetch })),
+      },
+      EXCHANGE_STATE: {},
+      ACCOUNTS: {
+        idFromName: vi.fn(() => 'accounts'),
+        get: vi.fn(() => ({ fetch: accountFetch })),
+      },
+    }
+
+    const response = await worker.fetch(new Request('https://worker.example/api/v1/room/messages?channelId=feedback&since=agent_read_1', {
+      headers: { Authorization: 'Bearer vct_agent_test' },
+    }), env as never)
+    const result = await response.json() as { forwardedUrl: string }
+
+    expect(response.status).toBe(200)
+    expect(new URL(result.forwardedUrl).searchParams.get('since')).toBe('agent_read_1')
+    expect(env.LIVE_ROOM.idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/feedback')
+  })
+
 })
