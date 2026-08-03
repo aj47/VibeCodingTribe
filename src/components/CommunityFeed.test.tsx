@@ -242,6 +242,89 @@ describe('CommunityFeed post hierarchy', () => {
     expect(screen.getByText('… 2 middle replies hidden …')).toBeInTheDocument()
   })
 
+  it('renders replies to replies in the top-level post thread', () => {
+    const nestedReply: RealtimeMessageRecord = {
+      ...profile,
+      id: 'nested_reply_12345678',
+      channelId: 'general',
+      text: 'This reply should stay visible.',
+      sentAt: '2026-07-21T18:04:00.000Z',
+      parentId: 'reply_12345678',
+      commentKind: 'reply',
+    }
+    render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[...messages, nestedReply]}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    const feedbackPost = screen.getByText('Does this value proposition make sense?', { selector: 'article > p' }).closest('article')
+    expect(feedbackPost).not.toBeNull()
+    expect(within(feedbackPost as HTMLElement).getByText('This reply should stay visible.')).toBeInTheDocument()
+    expect(within(feedbackPost as HTMLElement).getByRole('button', { name: /2 responses/i })).toBeInTheDocument()
+  })
+
+  it('preserves line breaks in reply bodies', () => {
+    const multilineMessages = messages.map((message) => message.id === 'reply_12345678'
+      ? { ...message, text: 'First line\nSecond line' }
+      : message)
+    const { container } = render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={multilineMessages}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    const replyBody = container.querySelector('.community-reply p')
+    expect(replyBody).toHaveTextContent('First line Second line')
+    expect(replyBody).toHaveClass('community-reply-body')
+  })
+
   it('accepts an image pasted into the composer and publishes an image-only post', async () => {
     const onSend = vi.fn()
     const onUploadImage = vi.fn(async () => 'https://media.example/pasted.png')

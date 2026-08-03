@@ -318,7 +318,7 @@ a { color: inherit; text-decoration: none; }
 .community-reply-points { margin-left: 3px; color: #2f684b; font: 700 8px var(--mono); letter-spacing: -.02em; white-space: nowrap; }
 .community-reply span em { padding: 2px 4px; background: #ebe8df; color: #667067; font-style: normal; text-transform: uppercase; }
 .community-reply--feedback span em { background: #dcebf2; color: #335e79; }
-.community-reply p { margin: 4px 0 0; color: #465048; font-size: 11px; line-height: 1.55; }
+.community-reply-body { margin: 4px 0 0; color: #465048; font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
 .community-reply-like { display: inline-flex; margin-top: 7px; padding: 2px 0; align-items: center; gap: 5px; background: transparent; color: #747c74; font: 650 8px var(--mono); }
 .community-reply-like:hover:not(:disabled) { color: #225d46; }
 .community-reply-image { display: block; width: min(100%, 420px); max-height: 320px; margin-top: 8px; object-fit: contain; border: 1px solid #d3d8d3; background: #e8ebe7; }
