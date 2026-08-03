@@ -71,6 +71,18 @@ export async function updateOwnProfile(input: Pick<PublicHumanProfile, 'displayN
   return authenticatedJson<{ profile: PublicHumanProfile }>('/api/profile', { method: 'PATCH', body: JSON.stringify(input) })
 }
 
+export interface ActivityDigestPreferences {
+  activityDigest: boolean
+}
+
+export async function loadActivityDigestPreferences() {
+  return authenticatedJson<{ preferences: ActivityDigestPreferences; email?: string }>('/api/notification-preferences')
+}
+
+export async function updateActivityDigestPreferences(input: ActivityDigestPreferences & { email?: string }) {
+  return authenticatedJson<{ preferences: ActivityDigestPreferences; email?: string }>('/api/notification-preferences', { method: 'PATCH', body: JSON.stringify(input) })
+}
+
 export async function loadPublicProfile(profileId: string) {
   const response = await fetch(new URL(`/api/profiles/${encodeURIComponent(profileId)}`, authOrigin()), { mode: 'cors' })
   const result = await response.json() as { profile?: PublicProfile; error?: string }

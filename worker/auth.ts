@@ -11,6 +11,15 @@ export interface AuthEnv {
   LINKEDIN_CLIENT_ID?: string
   LINKEDIN_CLIENT_SECRET?: string
   ACCOUNTS?: DurableObjectNamespace
+  EMAIL_UNSUBSCRIBE_ORIGIN?: string
+}
+
+interface ActivityDigestOptOutClaims {
+  version: 1
+  accountId: string
+  preference: 'activityDigest'
+  issuedAt: number
+  expiresAt: number
 }
 
 export interface SessionClaims {
@@ -42,6 +51,7 @@ const OAUTH_COOKIE = '__Host-vct_oauth'
 // bounded until they are replaced with revocable, server-side sessions.
 const SESSION_LIFETIME_SECONDS = 60 * 60 * 8
 const RECENT_AUTHENTICATION_SECONDS = 10 * 60
+const ACTIVITY_DIGEST_OPT_OUT_LIFETIME_SECONDS = 60 * 60 * 24 * 30
 const encoder = new TextEncoder()
 
 function base64UrlEncode(value: Uint8Array | string) {
@@ -85,6 +95,56 @@ async function verifyValue<T>(token: string, secret: string): Promise<T | null> 
   } catch {
     return null
   }
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
+}
+
+export async function activityDigestOptOutUrl(env: AuthEnv, accountId: string, now = Math.floor(Date.now() / 1000)) {
+  if (!env.SESSION_SECRET) throw new Error('SESSION_SECRET is required for activity digest opt-out links')
+  const token = await signValue({
+    version: 1,
+    accountId,
+    preference: 'activityDigest',
+    issuedAt: now,
+    expiresAt: now + ACTIVITY_DIGEST_OPT_OUT_LIFETIME_SECONDS,
+  } satisfies ActivityDigestOptOutClaims, env.SESSION_SECRET)
+  const origin = env.EMAIL_UNSUBSCRIBE_ORIGIN ?? env.AUTH_APP_ORIGIN
+  const url = new URL('/notifications/activity-digest/unsubscribe', origin)
+  url.searchParams.set('token', token)
+  return url.toString()
+}
+
+async function activityDigestOptOutClaims(request: Request, env: AuthEnv) {
+  if (!env.SESSION_SECRET) return null
+  const token = new URL(request.url).searchParams.get('token')
+  if (!token) return null
+  const claims = await verifyValue<ActivityDigestOptOutClaims>(token, env.SESSION_SECRET)
+  return claims && claims.version === 1 && claims.preference === 'activityDigest' && claims.accountId && claims.expiresAt > Math.floor(Date.now() / 1000)
+    ? { claims, token }
+    : null
+}
+
+function activityDigestOptOutPage(token: string, confirmed = false) {
+  const safeToken = escapeHtml(token)
+  const heading = confirmed ? 'Daily activity digests are off' : 'Stop daily activity digests?'
+  const copy = confirmed
+    ? 'You will no longer receive Vibe Coding Tribe daily activity digests. Your account and essential service emails are unchanged.'
+    : 'This stops only daily activity digests. Your account and essential service emails are unchanged.'
+  return new Response(`<!doctype html><html><head><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${heading}</title></head><body style="margin:0;background:#f4f7f4;color:#17251d;font-family:Arial,sans-serif"><main style="max-width:540px;margin:12vh auto;padding:32px;background:#fff;border:1px solid #d7e1d7;border-radius:12px"><p style="font-size:12px;letter-spacing:.12em;color:#66806c">VIBE CODING TRIBE</p><h1>${heading}</h1><p style="line-height:1.55">${copy}</p>${confirmed ? '<p>You can turn them back on anytime from your signed-in profile.</p>' : `<form method="post"><input type="hidden" name="token" value="${safeToken}"><button type="submit" style="padding:10px 14px;border:0;border-radius:6px;background:#2e6d4f;color:#fff;font-weight:700;cursor:pointer">Stop daily activity digests</button></form>`}</main></body></html>`, {
+    headers: { 'Cache-Control': 'no-store', 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'no-referrer' },
+  })
+}
+
+async function handleActivityDigestOptOut(request: Request, env: AuthEnv) {
+  const verified = await activityDigestOptOutClaims(request, env)
+  if (!verified) return new Response('This activity-digest link is invalid or has expired.', { status: 400, headers: { 'Cache-Control': 'no-store' } })
+  if (request.method === 'GET') return activityDigestOptOutPage(verified.token)
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+  const response = await accountRequest(env, '/notification-preferences', { accountId: verified.claims.accountId, activityDigest: false }, 'PATCH')
+  if (!response.ok) return new Response('We could not update your activity-digest preference. Please try again.', { status: 500, headers: { 'Cache-Control': 'no-store' } })
+  return activityDigestOptOutPage(verified.token, true)
 }
 
 function allowedOrigins(env: AuthEnv) {
@@ -482,6 +542,7 @@ async function publicUser(claims: SessionClaims, env: AuthEnv): Promise<AuthUser
 
 export async function handleAuthRequest(request: Request, env: AuthEnv): Promise<Response | null> {
   const url = new URL(request.url)
+  if (url.pathname === '/notifications/activity-digest/unsubscribe') return handleActivityDigestOptOut(request, env)
   if (request.method === 'OPTIONS' && url.pathname.startsWith('/auth/')) {
     return new Response(null, { status: 204, headers: corsHeaders(request, env) })
   }

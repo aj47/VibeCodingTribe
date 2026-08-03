@@ -38,7 +38,7 @@ const LEGACY_STORAGE_KEYS = ['vct-workspace-v3', 'vct-realtime-profile-v1', 'vct
 
 function loadSurface(): Surface {
   const path = window.location.pathname.replace(/\/+$/, '')
-  if (path === '/exchange' || path === '/missions' || path === '/c/feedback' || path === '/c/showcases') {
+  if (path === '/exchange' || path === '/missions') {
     window.history.replaceState({}, '', `${channelPath('general')}${window.location.search}${window.location.hash}`)
   }
   if (path === '/welcome') return 'home'

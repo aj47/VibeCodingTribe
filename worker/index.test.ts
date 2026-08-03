@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import worker, { cleanupExpiredMedia } from './index'
+import worker, { cleanupExpiredMedia, runDailyActivityDigest } from './index'
+import type { TransactionalEmail } from './email'
 
 describe('public room access', () => {
   it('redirects public Worker HTTP requests to HTTPS', async () => {
@@ -216,4 +217,74 @@ describe('public room access', () => {
     expect(env.LIVE_ROOM.idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/feedback')
   })
 
+})
+
+describe('daily activity digest job', () => {
+  function environment() {
+    let completed = false
+    const post = {
+      id: 'post_12345678', channelId: 'showcases', clientId: 'human_ada_realtime', profileId: 'human_ada',
+      displayName: 'Ada', handle: 'ada', avatarColor: '#657c54', text: 'My launch', sentAt: '2026-08-01T09:00:00.000Z', intent: 'showcase',
+    }
+    const reply = {
+      id: 'reply_12345678', channelId: 'showcases', clientId: 'human_grace_realtime', profileId: 'human_grace',
+      displayName: 'Grace', handle: 'grace', avatarColor: '#657c54', text: 'Looks great', sentAt: '2026-08-01T10:00:00.000Z', parentId: post.id, commentKind: 'reply',
+    }
+    const accountFetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url)
+      if (url.pathname === '/internal/notification-recipients') {
+        return Response.json({ recipients: [{ accountId: 'human_ada', realtimeClientId: 'human_ada_realtime', displayName: 'Ada', email: 'ada@example.com', preferences: { activityDigest: true } }] })
+      }
+      if (url.pathname === '/internal/activity-digest/prepare') {
+        const body = await request.json() as { events?: unknown[] }
+        return Response.json(completed ? { send: false, reason: 'already-sent' } : {
+          send: true, accountId: 'human_ada', email: 'ada@example.com', displayName: 'Ada', idempotencyKey: 'activity-digest:human_ada:2026-08-01', events: body.events ?? [],
+        })
+      }
+      if (url.pathname === '/internal/activity-digest/complete') {
+        completed = true
+        return Response.json({ delivered: true, eventCount: 1 })
+      }
+      return Response.json({ error: 'not found' }, { status: 404 })
+    })
+    const rooms = new Map<string, { fetch: (request: Request) => Promise<Response> }>()
+    for (const channelId of ['general', 'showcases', 'feedback']) {
+      rooms.set(`vibecodingtribe.com/channel/${channelId}`, { fetch: async () => Response.json({ messages: channelId === 'showcases' ? [post, reply] : [] }) })
+    }
+    return {
+      env: {
+        AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+        EMAIL_UNSUBSCRIBE_ORIGIN: 'https://worker.example',
+        SESSION_SECRET: 'test-session-secret-that-is-long-enough',
+        ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+        LIVE_ROOM: {
+          idFromName: (name: string) => name,
+          get: (id: string) => rooms.get(id)!,
+        },
+        ACCOUNTS: { idFromName: (name: string) => name, get: () => ({ fetch: accountFetch }) },
+        EXCHANGE_STATE: {},
+      },
+      accountFetch,
+    }
+  }
+
+  it('sends one non-empty digest and completes delivery only after provider success', async () => {
+    const { env, accountFetch } = environment()
+    const send = vi.fn<(email: TransactionalEmail) => Promise<void>>(async () => undefined)
+    const result = await runDailyActivityDigest(env as never, new Date('2026-08-01T08:00:00.000Z'), { send })
+
+    expect(result).toEqual({ sent: 1, failed: 0 })
+    expect(send).toHaveBeenCalledOnce()
+    expect(send.mock.calls[0]?.[0]).toMatchObject({ to: 'ada@example.com', idempotencyKey: 'activity-digest:human_ada:2026-08-01' })
+    expect(accountFetch).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://accounts.internal/internal/activity-digest/complete' }))
+  })
+
+  it('leaves completion untouched when the provider fails', async () => {
+    const { env, accountFetch } = environment()
+    const send = vi.fn<(email: TransactionalEmail) => Promise<void>>(async () => { throw new Error('provider down') })
+    const result = await runDailyActivityDigest(env as never, new Date('2026-08-01T08:00:00.000Z'), { send })
+
+    expect(result).toEqual({ sent: 0, failed: 1 })
+    expect(accountFetch).not.toHaveBeenCalledWith(expect.objectContaining({ url: 'https://accounts.internal/internal/activity-digest/complete' }))
+  })
 })

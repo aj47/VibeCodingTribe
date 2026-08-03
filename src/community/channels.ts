@@ -28,6 +28,7 @@ export function channelFromPath(pathname: string): CommunityChannelId {
   const normalizedPath = pathname.replace(/\/+$/, '') || '/'
   if (normalizedPath === '/missions' || normalizedPath === '/exchange') return 'general'
   if (normalizedPath === '/r/general' || normalizedPath === '/') return 'general'
-  if (normalizedPath.match(/^\/c\/([^/]+)$/)) return 'general'
+  const channel = normalizedPath.match(/^\/c\/([^/]+)$/)?.[1]
+  if (isCommunityChannelId(channel)) return channel
   return DEFAULT_CHANNEL_ID
 }

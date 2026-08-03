@@ -7,13 +7,13 @@ describe('community channels', () => {
     expect(channelRoomName('feedback')).toBe('vibecodingtribe.com/channel/feedback')
   })
 
-  it('maps every community route to the combined General channel', () => {
+  it('maps canonical community routes to their isolated channels', () => {
     expect(channelFromPath('/')).toBe('general')
     expect(channelFromPath('/r/general')).toBe('general')
     expect(channelFromPath('/missions')).toBe('general')
     expect(channelFromPath('/exchange')).toBe('general')
-    expect(channelFromPath('/c/showcases')).toBe('general')
-    expect(channelFromPath('/c/feedback')).toBe('general')
+    expect(channelFromPath('/c/showcases')).toBe('showcases')
+    expect(channelFromPath('/c/feedback')).toBe('feedback')
     expect(channelFromPath('/c/unknown')).toBe('general')
     expect(channelPath('feedback')).toBe('/c/feedback')
   })

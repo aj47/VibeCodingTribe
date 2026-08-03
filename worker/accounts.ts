@@ -1,6 +1,12 @@
 import type { AuthProvider, ProfileBadgeAward, PublicAgentProfile, PublicHumanProfile } from '../src/auth/types'
 import type { RealtimeMessageRecord } from '../src/realtime/protocol'
 import { normalizeHandle } from '../src/realtime/protocol'
+import {
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  type ActivityDigestCandidate,
+  type DigestRecipient,
+  type NotificationPreferences,
+} from './notifications'
 
 export interface AccountIdentity {
   provider: AuthProvider
@@ -22,6 +28,17 @@ export interface HumanAccount extends PublicHumanProfile {
   pointsBackfillVersion?: number
   pointAwardDay?: string
   pointAwardCount?: number
+  notificationPreferences?: NotificationPreferences
+}
+
+interface ActivityDigestRecord {
+  accountId: string
+  day: string
+  idempotencyKey: string
+  events: ActivityDigestCandidate[]
+  status: 'pending' | 'sent'
+  preparedAt: string
+  deliveredAt?: string
 }
 
 interface AgentEnrollmentRecord {
@@ -110,6 +127,8 @@ const ACCOUNT_PREFIX = 'account:'
 const IDENTITY_PREFIX = 'identity:'
 const ENROLLMENT_PREFIX = 'enrollment:'
 const CREDENTIAL_PREFIX = 'credential:'
+const DIGEST_PREFIX = 'activity-digest:'
+const DELIVERED_PREFIX = 'activity-delivered:'
 const RATE_LIMIT = 60
 const RATE_WINDOW_MS = 60_000
 const ENROLLMENT_LIMIT = 10
@@ -325,6 +344,12 @@ function safeString(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, max) : ''
 }
 
+function validEmail(value: unknown) {
+  if (typeof value !== 'string') return null
+  const email = value.trim().toLowerCase()
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null
+}
+
 function validAgentAvatarUrl(value: unknown) {
   if (value === undefined || value === null || value === '') return undefined
   if (typeof value !== 'string' || value.length > 2_048) return null
@@ -358,6 +383,12 @@ export class AccountStore implements DurableObject {
     if (url.pathname === '/points/backfill' && request.method === 'POST') return this.backfillPoints()
     if (url.pathname === '/points/award' && request.method === 'POST') return this.awardPoints(body)
     if (url.pathname === '/points/lookup' && request.method === 'POST') return this.lookupPoints(body)
+    if (url.pathname === '/notification-preferences' && ['GET', 'PATCH'].includes(request.method)) return request.method === 'GET'
+      ? this.getNotificationPreferences(url.searchParams.get('accountId'))
+      : this.updateNotificationPreferences(body)
+    if (url.pathname === '/internal/notification-recipients' && request.method === 'GET') return this.listNotificationRecipients()
+    if (url.pathname === '/internal/activity-digest/prepare' && request.method === 'POST') return this.prepareActivityDigest(body)
+    if (url.pathname === '/internal/activity-digest/complete' && request.method === 'POST') return this.completeActivityDigest(body)
     if (url.pathname === '/enrollments' && request.method === 'POST') return this.createEnrollment(body)
     if (url.pathname.match(/^\/enrollments\/[^/]+\/callback$/) && request.method === 'POST') return this.receiveHostedDelivery(url.pathname.split('/')[2] ?? '', body)
     if (url.pathname.match(/^\/enrollments\/[^/]+\/credential$/) && request.method === 'POST') return this.claimHostedDelivery(url.pathname.split('/')[2] ?? '', body)
@@ -400,6 +431,7 @@ export class AccountStore implements DurableObject {
         linkedProviders: [identity.provider],
         identities: [storedIdentity],
         agentCredentialIds: [],
+        notificationPreferences: { ...DEFAULT_NOTIFICATION_PREFERENCES },
         badges: [{ id: 'early_builder', awardedAt: now, source: 'automatic' }],
         createdAt: now,
         updatedAt: now,
@@ -714,6 +746,93 @@ export class AccountStore implements DurableObject {
     }
     await this.state.storage.put(`${ACCOUNT_PREFIX}${accountId}`, updated)
     return json({ profile: publicProfile(updated) })
+  }
+
+  private notificationPreferences(account: HumanAccount): NotificationPreferences {
+    return { ...DEFAULT_NOTIFICATION_PREFERENCES, ...(account.notificationPreferences ?? {}) }
+  }
+
+  private async getNotificationPreferences(accountId: string | null) {
+    if (!accountId) return json({ error: 'Account not found' }, 404)
+    const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
+    return account ? json({ preferences: this.notificationPreferences(account), ...(account.email ? { email: account.email } : {}) }) : json({ error: 'Account not found' }, 404)
+  }
+
+  private async updateNotificationPreferences(body: Record<string, unknown> | null) {
+    const accountId = typeof body?.accountId === 'string' ? body.accountId : ''
+    const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
+    if (!account) return json({ error: 'Account not found' }, 404)
+    if (typeof body?.activityDigest !== 'boolean') return json({ error: 'activityDigest must be a boolean' }, 400)
+    const providedEmail = body?.email === undefined ? account.email : validEmail(body.email)
+    if (providedEmail === null) return json({ error: 'Enter a valid email address for activity digests.' }, 400)
+    if (body.activityDigest && !providedEmail) return json({ error: 'Add an email address before turning on activity digests.' }, 400)
+    account.email = providedEmail || undefined
+    account.notificationPreferences = { ...this.notificationPreferences(account), activityDigest: body.activityDigest }
+    account.updatedAt = new Date().toISOString()
+    await this.state.storage.put(`${ACCOUNT_PREFIX}${account.id}`, account)
+    return json({ preferences: account.notificationPreferences, ...(account.email ? { email: account.email } : {}) })
+  }
+
+  private async listNotificationRecipients() {
+    const accounts = await this.state.storage.list<HumanAccount>({ prefix: ACCOUNT_PREFIX })
+    const recipients: DigestRecipient[] = [...accounts.values()].map((account) => ({
+      accountId: account.id,
+      realtimeClientId: account.realtimeClientId,
+      displayName: account.displayName,
+      ...(account.email ? { email: account.email } : {}),
+      preferences: this.notificationPreferences(account),
+    }))
+    return json({ recipients })
+  }
+
+  private async prepareActivityDigest(body: Record<string, unknown> | null) {
+    const accountId = typeof body?.accountId === 'string' ? body.accountId : ''
+    const day = typeof body?.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.day) ? body.day : ''
+    const events = Array.isArray(body?.events) ? body.events as ActivityDigestCandidate[] : []
+    const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
+    if (!account || !day) return json({ error: 'Invalid digest recipient or day' }, 400)
+    if (!account.email || !this.notificationPreferences(account).activityDigest) return json({ send: false, reason: 'not-eligible' })
+    const key = `${DIGEST_PREFIX}${account.id}:${day}`
+    const existing = await this.state.storage.get<ActivityDigestRecord>(key)
+    if (existing) {
+      if (existing.status === 'sent') return json({ send: false, reason: 'already-sent' })
+      return json({ send: true, accountId: account.id, email: account.email, displayName: account.displayName, idempotencyKey: existing.idempotencyKey, events: existing.events })
+    }
+    const delivered = await Promise.all(events.map(async (event) => ({
+      event,
+      delivered: Boolean(await this.state.storage.get(`${DELIVERED_PREFIX}${account.id}:${event.id}`)),
+    })))
+    const pendingEvents = [...new Map(delivered.filter((item) => !item.delivered).map((item) => [item.event.id, item.event])).values()]
+    if (!pendingEvents.length) return json({ send: false, reason: 'empty' })
+    const record: ActivityDigestRecord = {
+      accountId: account.id,
+      day,
+      idempotencyKey: `activity-digest:${account.id}:${day}`,
+      events: pendingEvents,
+      status: 'pending',
+      preparedAt: new Date().toISOString(),
+    }
+    await this.state.storage.put(key, record)
+    return json({ send: true, accountId: account.id, email: account.email, displayName: account.displayName, idempotencyKey: record.idempotencyKey, events: record.events })
+  }
+
+  private async completeActivityDigest(body: Record<string, unknown> | null) {
+    const accountId = typeof body?.accountId === 'string' ? body.accountId : ''
+    const day = typeof body?.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.day) ? body.day : ''
+    const idempotencyKey = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey : ''
+    if (!accountId || !day || !idempotencyKey) return json({ error: 'Digest completion fields are required' }, 400)
+    const key = `${DIGEST_PREFIX}${accountId}:${day}`
+    const record = await this.state.storage.get<ActivityDigestRecord>(key)
+    if (!record || record.idempotencyKey !== idempotencyKey) return json({ error: 'Digest was not prepared' }, 409)
+    if (record.status === 'sent') return json({ delivered: true, alreadyDelivered: true })
+    const deliveredAt = new Date().toISOString()
+    record.status = 'sent'
+    record.deliveredAt = deliveredAt
+    await this.state.storage.put({
+      [key]: record,
+      ...Object.fromEntries(record.events.map((event) => [`${DELIVERED_PREFIX}${accountId}:${event.id}`, { deliveredAt }])),
+    })
+    return json({ delivered: true, eventCount: record.events.length })
   }
 
   private async createEnrollment(body: Record<string, unknown> | null) {
