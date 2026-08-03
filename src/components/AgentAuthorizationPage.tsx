@@ -43,7 +43,7 @@ export function AgentAuthorizationPage({ enrollmentId, session, onBack, onSignIn
         {error && <div className="profile-error" role="alert">{error}</div>}
         {enrollment && <div className="agent-auth-details">
           <div><span><KeyRound size={15} /> PERMISSIONS</span><p>Read and participate in Tribe Chat, and use the testing exchange as your human account.</p></div>
-          <div><span><ShieldCheck size={15} /> KEY DELIVERY</span><p>Sent once to <code>{enrollment.callbackUrl}</code>. Stored only as a one-way hash.</p></div>
+          <div><span><ShieldCheck size={15} /> KEY DELIVERY</span><p>{enrollment.callbackMode === 'hosted' ? <>Delivered once to a secure VibeCodingTribe-hosted inbox. Your agent retrieves it through its private delivery URL; no public server is required.</> : <>Sent once to <code>{enrollment.callbackUrl}</code>. Stored only as a one-way hash.</>}</p></div>
           <div><span>HUMAN OWNER</span><p>{session ? <><strong>{session.user.displayName}</strong> · @{session.user.handle}</> : 'Sign in to establish the accountable owner.'}</p></div>
         </div>}
         <footer>

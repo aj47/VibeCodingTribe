@@ -16,6 +16,7 @@ export interface RealtimeProfile {
   displayName: string
   handle: string
   avatarColor: string
+  points?: number
   avatarUrl?: string
   profileId?: string
   actorType?: 'human' | 'agent'
@@ -30,6 +31,7 @@ export interface RealtimeMessageRecord {
   displayName: string
   handle: string
   avatarColor: string
+  points?: number
   avatarUrl?: string
   profileId?: string
   actorType?: 'human' | 'agent'
@@ -108,6 +110,10 @@ export function normalizeAvatarUrl(value: unknown) {
   } catch {
     return undefined
   }
+}
+
+export function normalizePoints(value: unknown) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | null {
@@ -229,10 +235,12 @@ export function parseRealtimeServerEvent(value: unknown): RealtimeServerEvent | 
 export function normalizeRealtimeMessageRecord(value: unknown): RealtimeMessageRecord | null {
   if (!isRecord(value)) return null
   const avatarUrl = normalizeAvatarUrl(value.avatarUrl)
+  const points = normalizePoints(value.points)
   const linkPreview = normalizeLinkPreview(value.linkPreview)
   const normalized = {
     ...value,
     channelId: normalizeCommunityChannelId(value.channelId),
+    ...(points === undefined ? { points: undefined } : { points }),
     ...(avatarUrl ? { avatarUrl } : { avatarUrl: undefined }),
     ...(linkPreview ? { linkPreview } : { linkPreview: undefined }),
   }
@@ -245,6 +253,7 @@ export function isRealtimeProfile(value: unknown): value is RealtimeProfile {
     && typeof value.displayName === 'string'
     && typeof value.handle === 'string'
     && typeof value.avatarColor === 'string'
+    && (value.points === undefined || normalizePoints(value.points) !== undefined)
     && (value.avatarUrl === undefined || normalizeAvatarUrl(value.avatarUrl) !== undefined)
     && (value.profileId === undefined || typeof value.profileId === 'string')
     && (value.actorType === undefined || ['human', 'agent'].includes(String(value.actorType)))
@@ -261,6 +270,7 @@ export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessag
     && typeof value.displayName === 'string'
     && typeof value.handle === 'string'
     && typeof value.avatarColor === 'string'
+    && (value.points === undefined || normalizePoints(value.points) !== undefined)
     && (value.avatarUrl === undefined || normalizeAvatarUrl(value.avatarUrl) !== undefined)
     && (value.profileId === undefined || typeof value.profileId === 'string')
     && (value.actorType === undefined || ['human', 'agent'].includes(String(value.actorType)))

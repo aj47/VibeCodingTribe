@@ -129,4 +129,34 @@ describe('public room access', () => {
     expect(put.mock.calls[0]?.[0]).toMatch(/\.png$/)
   })
 
+  it('creates hosted agent delivery URLs when no callback server is supplied', async () => {
+    const accountFetch = vi.fn(async (incoming: Request) => {
+      const body = await incoming.json() as { hostedCallbackOrigin?: string }
+      expect(body.hostedCallbackOrigin).toBe('https://worker.example')
+      return Response.json({ enrollment: { id: 'enrollment_12345678', callbackMode: 'hosted' }, deliveryToken: 'vct_delivery_test' }, { status: 201 })
+    })
+    const env = {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+      LIVE_ROOM: {},
+      EXCHANGE_STATE: {},
+      ACCOUNTS: {
+        idFromName: vi.fn(() => 'accounts'),
+        get: vi.fn(() => ({ fetch: accountFetch })),
+      },
+    }
+
+    const response = await worker.fetch(new Request('https://worker.example/api/agents/enrollments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hosted Scout' }),
+    }), env as never)
+    const result = await response.json() as { deliveryToken: string; deliveryUrl: string; authorizationUrl: string }
+
+    expect(response.status).toBe(201)
+    expect(result.deliveryToken).toBe('vct_delivery_test')
+    expect(result.deliveryUrl).toBe('https://worker.example/api/agents/enrollments/enrollment_12345678/credential')
+    expect(result.authorizationUrl).toBe('https://vibecodingtribe.com/agents/authorize/enrollment_12345678')
+  })
+
 })

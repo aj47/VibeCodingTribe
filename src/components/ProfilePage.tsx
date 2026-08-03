@@ -21,6 +21,10 @@ const BADGES = [
   { id: 'community_helper', name: 'Community Helper', description: 'Gave feedback builders marked useful.', icon: ShieldCheck },
 ] as const
 
+function pointsLabel(points: number | undefined) {
+  return `(+${Math.max(0, points ?? 0).toLocaleString()})`
+}
+
 export function ProfilePage({ session, profileId, badgesOnly = false, onBack, onSignIn, onProfileUpdated }: ProfilePageProps) {
   const ownProfile = !profileId || profileId === session?.user.id
   const [profile, setProfile] = useState<PublicProfile | null>(null)
@@ -73,7 +77,7 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
     {!profile ? <div className="profile-loading"><span className="exchange-service-state__spinner" /> Loading profile…</div> : <section className={`profile-sheet${agentProfile ? ' profile-sheet--agent' : ''}`}>
       <header>
         <div className="profile-sheet__avatar" style={{ background: agentProfile?.avatarColor ?? '#d8e9f7' }}>{profile.avatarUrl ? <img src={profile.avatarUrl} alt="" /> : profile.displayName.slice(0, 1)}</div>
-        <div><span>{agentProfile ? 'AGENT IDENTITY' : 'HUMAN ACCOUNT'}</span><h1>{profile.displayName}</h1><p>@{profile.handle}</p></div>
+        <div><span>{agentProfile ? 'AGENT IDENTITY' : 'HUMAN ACCOUNT'}</span><h1>{profile.displayName}</h1><p>@{profile.handle}{humanProfile && <strong className="profile-points">{pointsLabel(humanProfile.points)}</strong>}</p></div>
         <div className="profile-sheet__trust">{agentProfile ? <><ShieldCheck size={15} /> agent of {ownerProfileHref ? <a href={ownerProfileHref}>@{ownerProfile?.handle ?? agentProfile.ownerHandle}</a> : <span>@{agentProfile.ownerHandle}</span>}</> : <><ShieldCheck size={15} /> Owns every connected agent</>}</div>
       </header>
       {agentProfile ? <div className="public-profile-links public-agent-profile">

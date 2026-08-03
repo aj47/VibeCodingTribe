@@ -1,4 +1,5 @@
 import type { AuthProvider, ProfileBadgeAward, PublicAgentProfile, PublicHumanProfile } from '../src/auth/types'
+import type { RealtimeMessageRecord } from '../src/realtime/protocol'
 import { normalizeHandle } from '../src/realtime/protocol'
 
 export interface AccountIdentity {
@@ -18,17 +19,23 @@ export interface HumanAccount extends PublicHumanProfile {
   createdAt: string
   updatedAt: string
   badges?: ProfileBadgeAward[]
+  pointsBackfillVersion?: number
 }
 
 interface AgentEnrollmentRecord {
   id: string
   name: string
   callbackUrl: string
+  callbackMode?: 'hosted' | 'external'
   createdAt: string
   expiresAt: string
   status: 'pending' | 'authorized' | 'delivered' | 'failed'
   avatarUrl?: string
   ownerAccountId?: string
+  activeCredentialId?: string
+  deliveryTokenHash?: string
+  pendingDelivery?: HostedDeliveryRecord
+  deliveryDisabledAt?: string
   deliveryError?: string
 }
 
@@ -39,6 +46,7 @@ interface AgentCredentialRecord {
   handle: string
   avatarUrl?: string
   callbackUrl: string
+  enrollmentId?: string
   keyPrefix: string
   secretHash: string
   createdAt: string
@@ -46,6 +54,48 @@ interface AgentCredentialRecord {
   revokedAt?: string
   rateWindowStartedAt: number
   rateWindowCount: number
+}
+
+interface AccountStoreEnv {
+  LIVE_ROOM?: DurableObjectNamespace
+  SESSION_SECRET?: string
+  AGENT_DELIVERY_SECRET?: string
+}
+
+interface HostedDeliveryRecord {
+  credentialId: string
+  ciphertext: string
+  deliveredAt: string
+}
+
+type AgentDeliveryType = 'vibecodingtribe.agent.authorized' | 'vibecodingtribe.agent.key_rotated'
+
+interface PointRecipient {
+  profileId?: string
+  realtimeClientId?: string
+  handle?: string
+  displayName?: string
+}
+
+interface PointMessageInput {
+  channelId: string
+  messageId: string
+  author: PointRecipient
+  parent?: PointRecipient
+}
+
+interface PointLookupReference extends PointRecipient {
+  key: string
+}
+
+interface PointAward {
+  accountId: string
+  points: number
+}
+
+interface PointUpdate {
+  profileId: string
+  points: number
 }
 
 export interface AgentAuthResult {
@@ -62,10 +112,79 @@ const RATE_LIMIT = 60
 const RATE_WINDOW_MS = 60_000
 const ENROLLMENT_LIMIT = 10
 const ENROLLMENT_WINDOW_MS = 60 * 60_000
+const POINTS_BACKFILL_KEY = 'points:backfill:v1'
+const POINTS_BACKFILL_VERSION = 1
+const POINTS_EVENT_PREFIX = 'points:event:v1:'
+const POINTS_CHANNELS = ['general', 'showcases', 'feedback'] as const
 const encoder = new TextEncoder()
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } })
+}
+
+function storedPoints(value: unknown) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
+function normalizePointRecipient(value: unknown): PointRecipient | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  const profileId = typeof candidate.profileId === 'string' ? candidate.profileId.trim().slice(0, 120) : undefined
+  const realtimeClientId = typeof candidate.realtimeClientId === 'string' ? candidate.realtimeClientId.trim().slice(0, 120) : undefined
+  const handle = typeof candidate.handle === 'string' ? normalizeHandle(candidate.handle) : undefined
+  const displayName = typeof candidate.displayName === 'string' ? candidate.displayName.trim().replace(/\s+/g, ' ').slice(0, 80) : undefined
+  if (!profileId && !realtimeClientId && !handle && !displayName) return null
+  return {
+    ...(profileId ? { profileId } : {}),
+    ...(realtimeClientId ? { realtimeClientId } : {}),
+    ...(handle ? { handle } : {}),
+    ...(displayName ? { displayName } : {}),
+  }
+}
+
+function pointRecipientForMessage(message: RealtimeMessageRecord): PointRecipient {
+  const isAgent = message.actorType === 'agent'
+  return {
+    ...(isAgent ? (message.ownerProfileId ? { profileId: message.ownerProfileId } : {}) : (message.profileId ? { profileId: message.profileId } : {})),
+    ...(!isAgent && message.clientId ? { realtimeClientId: message.clientId } : {}),
+    ...(isAgent ? (message.ownerHandle ? { handle: message.ownerHandle } : {}) : (message.handle ? { handle: message.handle } : {})),
+    ...(message.displayName ? { displayName: message.displayName } : {}),
+  }
+}
+
+function pointEventKey(input: Pick<PointMessageInput, 'channelId' | 'messageId'>, accountId: string) {
+  return `${POINTS_EVENT_PREFIX}${encodeURIComponent(input.channelId)}:${encodeURIComponent(input.messageId)}:${encodeURIComponent(accountId)}`
+}
+
+function historyPointEventKey(message: Pick<RealtimeMessageRecord, 'channelId' | 'id'>) {
+  return `${encodeURIComponent(message.channelId)}:${encodeURIComponent(message.id)}`
+}
+
+function samePointRecipient(left: PointRecipient, right: PointRecipient) {
+  if (left.profileId && right.profileId) return left.profileId === right.profileId
+  if (left.realtimeClientId && right.realtimeClientId) return left.realtimeClientId === right.realtimeClientId
+  if (left.handle && right.handle) return left.handle.toLowerCase() === right.handle.toLowerCase()
+  return Boolean(left.displayName && right.displayName && left.displayName.toLowerCase() === right.displayName.toLowerCase())
+}
+
+function resolveAccountFromList(accounts: HumanAccount[], recipient: PointRecipient) {
+  if (recipient.profileId) {
+    const exact = accounts.find((account) => account.id === recipient.profileId)
+    if (exact) return exact
+  }
+  if (recipient.realtimeClientId) {
+    const exact = accounts.find((account) => account.realtimeClientId === recipient.realtimeClientId)
+    if (exact) return exact
+  }
+  if (recipient.handle) {
+    const matches = accounts.filter((account) => account.handle.toLowerCase() === recipient.handle!.toLowerCase())
+    if (matches.length === 1) return matches[0]
+  }
+  if (recipient.displayName) {
+    const matches = accounts.filter((account) => account.displayName.toLowerCase() === recipient.displayName!.toLowerCase())
+    if (matches.length === 1) return matches[0]
+  }
+  return undefined
 }
 
 function base64UrlEncode(value: Uint8Array) {
@@ -74,12 +193,43 @@ function base64UrlEncode(value: Uint8Array) {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
+function base64UrlDecode(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
 function randomToken(bytes = 24) {
   return base64UrlEncode(crypto.getRandomValues(new Uint8Array(bytes)))
 }
 
 async function sha256(value: string) {
   return base64UrlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))))
+}
+
+function deliveryEncryptionSecret(env?: AccountStoreEnv) {
+  return env?.AGENT_DELIVERY_SECRET || env?.SESSION_SECRET || 'vct-local-agent-delivery-secret'
+}
+
+async function encryptHostedDelivery(value: unknown, env?: AccountStoreEnv) {
+  const keyMaterial = await crypto.subtle.digest('SHA-256', encoder.encode(deliveryEncryptionSecret(env)))
+  const key = await crypto.subtle.importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, ['encrypt'])
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(JSON.stringify(value))))
+  return `${base64UrlEncode(iv)}.${base64UrlEncode(ciphertext)}`
+}
+
+async function decryptHostedDelivery<T>(ciphertext: string, env?: AccountStoreEnv): Promise<T | null> {
+  const [ivValue, ciphertextValue, ...rest] = ciphertext.split('.')
+  if (!ivValue || !ciphertextValue || rest.length) return null
+  try {
+    const keyMaterial = await crypto.subtle.digest('SHA-256', encoder.encode(deliveryEncryptionSecret(env)))
+    const key = await crypto.subtle.importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, ['decrypt'])
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64UrlDecode(ivValue) }, key, base64UrlDecode(ciphertextValue))
+    return JSON.parse(new TextDecoder().decode(plaintext)) as T
+  } catch {
+    return null
+  }
 }
 
 async function realtimeId(accountId: string) {
@@ -93,6 +243,7 @@ function publicProfile(account: HumanAccount): PublicHumanProfile {
     displayName: account.displayName,
     handle: account.handle,
     realtimeClientId: account.realtimeClientId,
+    points: storedPoints(account.points),
     ...(account.avatarUrl ? { avatarUrl: account.avatarUrl } : {}),
     ...(account.headline ? { headline: account.headline } : {}),
     ...(account.bio ? { bio: account.bio } : {}),
@@ -130,6 +281,20 @@ function validCallback(value: unknown) {
     if (url.protocol !== 'https:' || url.username || url.password) return null
     if (url.hostname === 'localhost' || url.hostname.endsWith('.local') || /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname)) return null
     return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function validHostedCallbackOrigin(value: unknown) {
+  if (typeof value !== 'string' || value.length > 512) return null
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    const local = hostname === 'localhost' || hostname === '127.0.0.1'
+    if ((!local && url.protocol !== 'https:') || (local && !['http:', 'https:'].includes(url.protocol))) return null
+    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) return null
+    return url.origin
   } catch {
     return null
   }
@@ -186,7 +351,7 @@ function agentHandle(name: string, id: string) {
 }
 
 export class AccountStore implements DurableObject {
-  constructor(private readonly state: DurableObjectState) {}
+  constructor(private readonly state: DurableObjectState, private readonly env?: AccountStoreEnv) {}
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -199,7 +364,12 @@ export class AccountStore implements DurableObject {
     if (url.pathname === '/profile/by-realtime' && request.method === 'GET') return this.getProfileByRealtime(url.searchParams.get('realtimeId'))
     if (url.pathname === '/agent-profile' && request.method === 'GET') return this.getAgentProfile(url.searchParams.get('agentId'))
     if (url.pathname === '/profile' && request.method === 'PATCH') return this.updateProfile(body)
+    if (url.pathname === '/points/backfill' && request.method === 'POST') return this.backfillPoints()
+    if (url.pathname === '/points/award' && request.method === 'POST') return this.awardPoints(body)
+    if (url.pathname === '/points/lookup' && request.method === 'POST') return this.lookupPoints(body)
     if (url.pathname === '/enrollments' && request.method === 'POST') return this.createEnrollment(body)
+    if (url.pathname.match(/^\/enrollments\/[^/]+\/callback$/) && request.method === 'POST') return this.receiveHostedDelivery(url.pathname.split('/')[2] ?? '', body)
+    if (url.pathname.match(/^\/enrollments\/[^/]+\/credential$/) && request.method === 'POST') return this.claimHostedDelivery(url.pathname.split('/')[2] ?? '', body)
     if (url.pathname.startsWith('/enrollments/') && request.method === 'GET') return this.getEnrollment(url.pathname.split('/')[2] ?? '')
     if (url.pathname.match(/^\/enrollments\/[^/]+\/authorize$/) && request.method === 'POST') return this.authorizeEnrollment(url.pathname.split('/')[2] ?? '', body)
     if (url.pathname === '/credentials/authenticate' && request.method === 'POST') return this.authenticateCredential(body)
@@ -261,13 +431,18 @@ export class AccountStore implements DurableObject {
       [`${ACCOUNT_PREFIX}${account.id}`]: account,
       [`realtime:${account.realtimeClientId}`]: account.id,
     })
-    return json({ account, profile: publicProfile(account) })
+    await this.ensureAccountPoints(account.id)
+    const refreshed = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${account.id}`) ?? account
+    return json({ account: refreshed, profile: publicProfile(refreshed) })
   }
 
   private async getProfile(accountId: string | null) {
     if (!accountId) return json({ error: 'Profile not found' }, 404)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
-    return account ? json({ profile: publicProfile(account), account }) : json({ error: 'Profile not found' }, 404)
+    if (!account) return json({ error: 'Profile not found' }, 404)
+    await this.ensureAccountPoints(account.id)
+    const refreshed = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${account.id}`) ?? account
+    return json({ profile: publicProfile(refreshed), account: refreshed })
   }
 
   private async getProfileByRealtime(realtimeIdValue: string | null) {
@@ -282,6 +457,8 @@ export class AccountStore implements DurableObject {
     if (!credential) return json({ error: 'Profile not found' }, 404)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
     if (!account) return json({ error: 'Profile not found' }, 404)
+    await this.ensureAccountPoints(account.id)
+    const refreshedAccount = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${account.id}`) ?? account
     const profile: PublicAgentProfile = {
       id: credential.id,
       displayName: credential.name,
@@ -289,10 +466,219 @@ export class AccountStore implements DurableObject {
       ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}),
       avatarColor: '#c8ddf0',
       actorType: 'agent',
-      ownerHandle: account.handle,
-      owner: publicProfile(account),
+      ownerHandle: refreshedAccount.handle,
+      owner: publicProfile(refreshedAccount),
     }
     return json({ profile })
+  }
+
+  private async accounts() {
+    const stored = await this.state.storage.list<HumanAccount>({ prefix: ACCOUNT_PREFIX })
+    return [...stored.values()]
+  }
+
+  private async findAccount(recipient: PointRecipient, accounts?: HumanAccount[]) {
+    if (recipient.profileId) {
+      const direct = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${recipient.profileId}`)
+      if (direct) return direct
+    }
+    if (recipient.realtimeClientId) {
+      const accountId = await this.state.storage.get<string>(`realtime:${recipient.realtimeClientId}`)
+      if (accountId) {
+        const direct = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
+        if (direct) return direct
+      }
+    }
+    return resolveAccountFromList(accounts ?? await this.accounts(), recipient)
+  }
+
+  private async roomHistory() {
+    if (!this.env?.LIVE_ROOM) return []
+    const responses = await Promise.all(POINTS_CHANNELS.map(async (channelId) => {
+      const roomId = this.env!.LIVE_ROOM!.idFromName(`vibecodingtribe.com/channel/${channelId}`)
+      const response = await this.env!.LIVE_ROOM!.get(roomId).fetch(new Request(`https://internal/internal/export?channelId=${channelId}`))
+      if (!response.ok) throw new Error(`Could not export ${channelId} history (${response.status})`)
+      const result = await response.json() as { messages?: unknown[] }
+      return (result.messages ?? []).flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+        const message = value as RealtimeMessageRecord
+        return typeof message.id === 'string' && typeof message.channelId === 'string' ? [message] : []
+      })
+    }))
+    return responses.flat()
+  }
+
+  private pointAwardsForHistory(messages: RealtimeMessageRecord[], accounts: HumanAccount[]) {
+    const parents = new Map(messages.map((message) => [`${message.channelId}:${message.id}`, message]))
+    const eventAwards = new Map<string, Map<string, number>>()
+    const expected = new Map<string, number>()
+    const add = (message: RealtimeMessageRecord, account: HumanAccount | undefined, points: number) => {
+      if (!account) return
+      const eventKey = historyPointEventKey(message)
+      const awards = eventAwards.get(eventKey) ?? new Map<string, number>()
+      awards.set(account.id, (awards.get(account.id) ?? 0) + points)
+      eventAwards.set(eventKey, awards)
+      expected.set(account.id, (expected.get(account.id) ?? 0) + points)
+    }
+
+    for (const message of messages) {
+      const authorRef = pointRecipientForMessage(message)
+      const author = resolveAccountFromList(accounts, authorRef)
+      if (!message.parentId) {
+        add(message, author, 1)
+        continue
+      }
+      const parent = parents.get(`${message.channelId}:${message.parentId}`)
+      if (!parent) continue
+      const parentRef = pointRecipientForMessage(parent)
+      const parentAccount = resolveAccountFromList(accounts, parentRef)
+      const sameAuthor = samePointRecipient(authorRef, parentRef) || Boolean(author && parentAccount && author.id === parentAccount.id)
+      if (sameAuthor) continue
+      add(message, parentAccount, 1)
+      add(message, author, 2)
+    }
+    return { eventAwards, expected }
+  }
+
+  private async reconcilePoints(messages: RealtimeMessageRecord[], accountIds?: Set<string>) {
+    const accounts = await this.accounts()
+    const targets = accountIds ? accounts.filter((account) => accountIds.has(account.id)) : accounts
+    const { eventAwards, expected } = this.pointAwardsForHistory(messages, accounts)
+    const writes: Record<string, unknown> = {}
+    const updates: PointUpdate[] = []
+
+    for (const account of targets) {
+      const current = storedPoints(account.points)
+      const next = Math.max(current, expected.get(account.id) ?? 0)
+      if (current !== next) updates.push({ profileId: account.id, points: next })
+      if (current !== next || account.pointsBackfillVersion !== POINTS_BACKFILL_VERSION) {
+        writes[`${ACCOUNT_PREFIX}${account.id}`] = {
+          ...account,
+          points: next,
+          pointsBackfillVersion: POINTS_BACKFILL_VERSION,
+        } satisfies HumanAccount
+      }
+    }
+
+    const targetIds = new Set(targets.map((account) => account.id))
+    for (const [eventKey, awards] of eventAwards) {
+      for (const [accountId, points] of awards) {
+        if (!targetIds.has(accountId)) continue
+        const separator = eventKey.indexOf(':')
+        if (separator === -1) continue
+        const channelId = decodeURIComponent(eventKey.slice(0, separator))
+        const messageId = decodeURIComponent(eventKey.slice(separator + 1))
+        if (!channelId || !messageId) continue
+        const ledgerKey = pointEventKey({ channelId, messageId }, accountId)
+        if (await this.state.storage.get(ledgerKey) === undefined) {
+          writes[ledgerKey] = { accountId, points, version: POINTS_BACKFILL_VERSION }
+        }
+      }
+    }
+
+    if (Object.keys(writes).length) await this.state.storage.put(writes)
+    await this.notifyPointUpdates(updates)
+    return { accounts: targets.length, updates, events: eventAwards.size }
+  }
+
+  private async backfillPoints() {
+    if (!this.env?.LIVE_ROOM) return json({ status: 'skipped', reason: 'Realtime storage is unavailable' })
+    const existing = await this.state.storage.get<{ version?: number; count?: number }>(POINTS_BACKFILL_KEY)
+    const messages = await this.roomHistory()
+    if (existing?.version === POINTS_BACKFILL_VERSION && existing.count === messages.length) {
+      return json({ status: 'already_backfilled', version: POINTS_BACKFILL_VERSION, count: messages.length })
+    }
+    const result = await this.reconcilePoints(messages)
+    await this.state.storage.put(POINTS_BACKFILL_KEY, { version: POINTS_BACKFILL_VERSION, completedAt: new Date().toISOString(), count: messages.length })
+    return json({ status: 'backfilled', version: POINTS_BACKFILL_VERSION, ...result })
+  }
+
+  private async ensureAccountPoints(accountId: string) {
+    if (!this.env?.LIVE_ROOM) return
+    const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
+    if (!account || account.pointsBackfillVersion === POINTS_BACKFILL_VERSION) return
+    const existing = await this.state.storage.get<{ version?: number }>(POINTS_BACKFILL_KEY)
+    if (existing?.version !== POINTS_BACKFILL_VERSION) {
+      await this.backfillPoints()
+      return
+    }
+    await this.reconcilePoints(await this.roomHistory(), new Set([accountId]))
+  }
+
+  private async awardPoints(body: Record<string, unknown> | null) {
+    const channelId = typeof body?.channelId === 'string' ? body.channelId.trim() : ''
+    const messageId = typeof body?.messageId === 'string' ? body.messageId.trim() : ''
+    const author = normalizePointRecipient(body?.author)
+    const parent = body?.parent === undefined ? undefined : normalizePointRecipient(body.parent)
+    if (!channelId || !messageId || !author || (body?.parent !== undefined && !parent)) return json({ error: 'Point event identity was invalid' }, 400)
+
+    const input: PointMessageInput = { channelId, messageId, author, ...(parent ? { parent } : {}) }
+    const accounts = await this.accounts()
+    const authorAccount = await this.findAccount(author, accounts)
+    const parentAccount = parent ? await this.findAccount(parent, accounts) : undefined
+    const awards = new Map<string, PointAward>()
+    const add = (account: HumanAccount | undefined, points: number) => {
+      if (!account) return
+      const previous = awards.get(account.id)
+      awards.set(account.id, { accountId: account.id, points: (previous?.points ?? 0) + points })
+    }
+
+    if (!parent) add(authorAccount, 1)
+    else if (!samePointRecipient(author, parent) && (!authorAccount || !parentAccount || authorAccount.id !== parentAccount.id)) {
+      add(parentAccount, 1)
+      add(authorAccount, 2)
+    }
+
+    const updates: PointUpdate[] = []
+    const writes: Record<string, unknown> = {}
+    for (const award of awards.values()) {
+      const account = accounts.find((candidate) => candidate.id === award.accountId)
+      if (!account) continue
+      const ledgerKey = pointEventKey(input, account.id)
+      if (await this.state.storage.get(ledgerKey) !== undefined) continue
+      const nextPoints = storedPoints(account.points) + award.points
+      writes[`${ACCOUNT_PREFIX}${account.id}`] = {
+        ...account,
+        points: nextPoints,
+        updatedAt: new Date().toISOString(),
+      } satisfies HumanAccount
+      writes[ledgerKey] = { accountId: account.id, points: award.points, version: POINTS_BACKFILL_VERSION }
+      updates.push({ profileId: account.id, points: nextPoints })
+    }
+    if (Object.keys(writes).length) await this.state.storage.put(writes)
+    await this.notifyPointUpdates(updates)
+    return json({ channelId, messageId, updates })
+  }
+
+  private async lookupPoints(body: Record<string, unknown> | null) {
+    if (!Array.isArray(body?.refs)) return json({ error: 'Point references are required' }, 400)
+    const refs = body.refs.slice(0, 500).flatMap((value): PointLookupReference[] => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+      const candidate = value as Record<string, unknown>
+      const key = typeof candidate.key === 'string' ? candidate.key.trim().slice(0, 160) : ''
+      const recipient = normalizePointRecipient(candidate)
+      return key && recipient ? [{ key, ...recipient }] : []
+    })
+    const accounts = await this.accounts()
+    const points: Record<string, number> = {}
+    for (const ref of refs) {
+      const account = await this.findAccount(ref, accounts)
+      if (account) points[ref.key] = storedPoints(account.points)
+    }
+    return json({ points })
+  }
+
+  private async notifyPointUpdates(updates: PointUpdate[]) {
+    if (!this.env?.LIVE_ROOM || updates.length === 0) return
+    await Promise.allSettled(POINTS_CHANNELS.map(async (channelId) => {
+      const roomId = this.env!.LIVE_ROOM!.idFromName(`vibecodingtribe.com/channel/${channelId}`)
+      const response = await this.env!.LIVE_ROOM!.get(roomId).fetch(new Request(`https://internal/internal/points-update?channelId=${channelId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates }),
+      }))
+      if (!response.ok) throw new Error(`Point propagation failed for ${channelId} (${response.status})`)
+    }))
   }
 
   private async updateProfile(body: Record<string, unknown> | null) {
@@ -331,9 +717,12 @@ export class AccountStore implements DurableObject {
 
   private async createEnrollment(body: Record<string, unknown> | null) {
     const name = safeString(body?.name, 64)
-    const callbackUrl = validCallback(body?.callbackUrl)
+    const requestedCallbackUrl = typeof body?.callbackUrl === 'string' ? body.callbackUrl.trim() : ''
+    const hostedCallbackOrigin = validHostedCallbackOrigin(body?.hostedCallbackOrigin)
+    const hosted = !requestedCallbackUrl
+    const callbackUrl = hosted ? hostedCallbackOrigin : validCallback(requestedCallbackUrl)
     const avatarUrl = validAgentAvatarUrl(body?.avatarUrl)
-    if (!name || !callbackUrl || avatarUrl === null) return json({ error: 'A name, public HTTPS callback URL, and optional HTTPS avatar URL are required' }, 400)
+    if (!name || !callbackUrl || avatarUrl === null) return json({ error: hosted ? 'A name and valid VibeCodingTribe callback origin are required' : 'A name, public HTTPS callback URL, and optional HTTPS avatar URL are required' }, 400)
     const requesterKey = safeString(body?.requesterKey, 160) || 'unknown'
     const rateKey = `enrollment-rate:${await sha256(requesterKey)}`
     const previousRate = await this.state.storage.get<{ startedAt: number; count: number }>(rateKey)
@@ -344,26 +733,32 @@ export class AccountStore implements DurableObject {
     rate.count += 1
     await this.state.storage.put(rateKey, rate)
     const now = new Date()
+    const id = randomToken(24)
+    const deliveryToken = hosted ? `vct_delivery_${randomToken(32)}` : undefined
     const enrollment: AgentEnrollmentRecord = {
-      id: randomToken(24),
+      id,
       name,
-      callbackUrl,
+      callbackUrl: hosted ? new URL(`/api/agents/callback/${id}`, callbackUrl).toString() : callbackUrl,
+      callbackMode: hosted ? 'hosted' : 'external',
       ...(avatarUrl ? { avatarUrl } : {}),
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
       status: 'pending',
+      ...(deliveryToken ? { deliveryTokenHash: await sha256(deliveryToken) } : {}),
     }
     await this.state.storage.put(`${ENROLLMENT_PREFIX}${enrollment.id}`, enrollment)
-    return json({ enrollment }, 201)
+    return json({ enrollment, ...(deliveryToken ? { deliveryToken } : {}) }, 201)
   }
 
   private async getEnrollment(id: string) {
     const enrollment = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
     if (!enrollment) return json({ error: 'Enrollment not found' }, 404)
+    const callbackMode = enrollment.callbackMode ?? 'external'
     return json({ enrollment: {
       id: enrollment.id,
       name: enrollment.name,
-      callbackUrl: new URL(enrollment.callbackUrl).origin,
+      callbackUrl: callbackMode === 'hosted' ? 'VibeCodingTribe hosted callback' : new URL(enrollment.callbackUrl).origin,
+      callbackMode,
       ...(enrollment.avatarUrl ? { avatarUrl: enrollment.avatarUrl } : {}),
       createdAt: enrollment.createdAt,
       expiresAt: enrollment.expiresAt,
@@ -380,9 +775,11 @@ export class AccountStore implements DurableObject {
     if (!enrollment || new Date(enrollment.expiresAt).getTime() <= Date.now()) return json({ error: 'This authorization request expired' }, 410)
     if (!account) return json({ error: 'Human account not found' }, 404)
     if (enrollment.status !== 'pending') return json({ error: 'This authorization request was already used' }, 409)
-    const issued = await this.issueCredential(account, enrollment.name, enrollment.callbackUrl, enrollment.avatarUrl)
+    const hosted = enrollment.callbackMode === 'hosted'
+    const issued = await this.issueCredential(account, enrollment.name, enrollment.callbackUrl, enrollment.avatarUrl, hosted ? enrollment.id : undefined)
     const credential = issued.credential
     enrollment.ownerAccountId = account.id
+    enrollment.activeCredentialId = credential.id
     enrollment.status = 'authorized'
     await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
     try {
@@ -398,6 +795,10 @@ export class AccountStore implements DurableObject {
         }),
       })
       if (!response.ok) throw new Error(`Callback returned ${response.status}`)
+      if (hosted) {
+        const delivered = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
+        return json({ enrollment: { id, name: enrollment.name, status: delivered?.status ?? 'delivered' }, credential: credentialSummary(credential) })
+      }
       enrollment.status = 'delivered'
       await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
       return json({ enrollment: { id, name: enrollment.name, status: enrollment.status }, credential: credentialSummary(credential) })
@@ -413,7 +814,7 @@ export class AccountStore implements DurableObject {
     }
   }
 
-  private async issueCredential(account: HumanAccount, name: string, callbackUrl: string, avatarUrl?: string) {
+  private async issueCredential(account: HumanAccount, name: string, callbackUrl: string, avatarUrl?: string, enrollmentId?: string) {
     const id = randomToken(12)
     const secret = randomToken(32)
     const apiKey = `vct_agent_${id}_${secret}`
@@ -424,6 +825,7 @@ export class AccountStore implements DurableObject {
       handle: agentHandle(name, id),
       ...(avatarUrl ? { avatarUrl } : {}),
       callbackUrl,
+      ...(enrollmentId ? { enrollmentId } : {}),
       keyPrefix: `vct_agent_${id.slice(0, 6)}…`,
       secretHash: await sha256(secret),
       createdAt: new Date().toISOString(),
@@ -441,12 +843,10 @@ export class AccountStore implements DurableObject {
 
   private async authenticateCredential(body: Record<string, unknown> | null) {
     const token = typeof body?.token === 'string' ? body.token : ''
-    // Agent ids are 16 base64url characters. Keep the split deterministic because
-    // the secret may also contain underscores.
-    const match = token.match(/^vct_agent_([A-Za-z0-9_-]{16})_([A-Za-z0-9_-]{32,80})$/)
-    if (!match) return json({ error: 'Invalid API key' }, 401)
-    const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${match[1]}`)
-    if (!credential || credential.revokedAt || credential.secretHash !== await sha256(match[2]!)) return json({ error: 'Invalid or revoked API key' }, 401)
+    const parsed = parseAgentApiKey(token)
+    if (!parsed) return json({ error: 'Invalid API key' }, 401)
+    const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${parsed.id}`)
+    if (!credential || credential.revokedAt || credential.secretHash !== await sha256(parsed.secret)) return json({ error: 'Invalid or revoked API key' }, 401)
     const now = Date.now()
     if (now - credential.rateWindowStartedAt >= RATE_WINDOW_MS) {
       credential.rateWindowStartedAt = now
@@ -487,6 +887,15 @@ export class AccountStore implements DurableObject {
     if (credential instanceof Response) return credential
     if (!credential.revokedAt) credential.revokedAt = new Date().toISOString()
     await this.state.storage.put(`${CREDENTIAL_PREFIX}${id}`, credential)
+    if (credential.enrollmentId) {
+      const enrollment = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${credential.enrollmentId}`)
+      if (enrollment?.activeCredentialId === credential.id) {
+        delete enrollment.deliveryTokenHash
+        delete enrollment.pendingDelivery
+        enrollment.deliveryDisabledAt = new Date().toISOString()
+        await this.state.storage.put(`${ENROLLMENT_PREFIX}${credential.enrollmentId}`, enrollment)
+      }
+    }
     return json({ credential: credentialSummary(credential) })
   }
 
@@ -496,7 +905,7 @@ export class AccountStore implements DurableObject {
     if (credential.revokedAt) return json({ error: 'Revoked keys cannot be rotated' }, 409)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
     if (!account) return json({ error: 'Account not found' }, 404)
-    const issued = await this.issueCredential(account, credential.name, credential.callbackUrl, credential.avatarUrl)
+    const issued = await this.issueCredential(account, credential.name, credential.callbackUrl, credential.avatarUrl, credential.enrollmentId)
     try {
       const response = await fetch(credential.callbackUrl, {
         method: 'POST',
@@ -514,10 +923,69 @@ export class AccountStore implements DurableObject {
     }
   }
 
+  private async receiveHostedDelivery(id: string, body: Record<string, unknown> | null) {
+    const enrollment = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
+    if (!enrollment || enrollment.callbackMode !== 'hosted' || !enrollment.deliveryTokenHash) return json({ error: 'Hosted callback not found' }, 404)
+    if (!body || !['vibecodingtribe.agent.authorized', 'vibecodingtribe.agent.key_rotated'].includes(body.type as string)) return json({ error: 'Invalid callback payload' }, 400)
+    if (typeof body.apiKey !== 'string' || typeof body.enrollmentId !== 'string' || body.enrollmentId !== id) return json({ error: 'Invalid callback payload' }, 400)
+    const agent = body.agent
+    if (!agent || typeof agent !== 'object' || Array.isArray(agent) || typeof (agent as Record<string, unknown>).id !== 'string') return json({ error: 'Invalid callback payload' }, 400)
+    const parsed = parseAgentApiKey(body.apiKey)
+    if (!parsed) return json({ error: 'Invalid callback payload' }, 400)
+    const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${parsed.id}`)
+    if (!credential || credential.revokedAt || credential.accountId !== enrollment.ownerAccountId || credential.callbackUrl !== enrollment.callbackUrl || credential.secretHash !== await sha256(parsed.secret)) return json({ error: 'Invalid callback payload' }, 401)
+    if ((agent as Record<string, unknown>).id !== credential.id) return json({ error: 'Invalid callback payload' }, 401)
+    if (body.type === 'vibecodingtribe.agent.authorized' && enrollment.activeCredentialId !== credential.id) return json({ error: 'Invalid callback payload' }, 401)
+    if (body.type === 'vibecodingtribe.agent.key_rotated' && enrollment.status !== 'delivered') return json({ error: 'Invalid callback state' }, 409)
+    if (enrollment.pendingDelivery) return json({ error: 'A key is already waiting for this agent' }, 409)
+    const payload = {
+      type: body.type as AgentDeliveryType,
+      enrollmentId: id,
+      apiKey: body.apiKey,
+      agent,
+      ...(body.owner ? { owner: body.owner } : {}),
+    }
+    enrollment.pendingDelivery = {
+      credentialId: credential.id,
+      ciphertext: await encryptHostedDelivery(payload, this.env),
+      deliveredAt: new Date().toISOString(),
+    }
+    enrollment.activeCredentialId = credential.id
+    enrollment.status = 'delivered'
+    delete enrollment.deliveryError
+    await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
+    return json({ accepted: true, status: enrollment.status }, 202)
+  }
+
+  private async claimHostedDelivery(id: string, body: Record<string, unknown> | null) {
+    const token = typeof body?.deliveryToken === 'string' ? body.deliveryToken : ''
+    const enrollment = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
+    if (!enrollment || !enrollment.deliveryTokenHash || enrollment.deliveryDisabledAt || enrollment.deliveryTokenHash !== await sha256(token)) return json({ error: 'Invalid or expired delivery token' }, 401)
+    if (!enrollment.pendingDelivery) {
+      if (enrollment.status === 'failed') return json({ error: 'Key delivery failed' }, 502)
+      if (enrollment.status === 'pending' && new Date(enrollment.expiresAt).getTime() <= Date.now()) return json({ error: 'This authorization request expired' }, 410)
+      return json({ status: enrollment.status === 'pending' ? 'pending' : 'waiting', enrollmentId: id, retryAfterSeconds: 2 }, 202)
+    }
+    const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${enrollment.pendingDelivery.credentialId}`)
+    if (!credential || credential.revokedAt || enrollment.activeCredentialId !== credential.id) return json({ error: 'This agent credential is no longer active' }, 410)
+    const payload = await decryptHostedDelivery<Record<string, unknown>>(enrollment.pendingDelivery.ciphertext, this.env)
+    if (!payload) return json({ error: 'The hosted delivery could not be opened' }, 500)
+    delete enrollment.pendingDelivery
+    await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
+    return json(payload)
+  }
+
   private async ownedCredential(id: string, body: Record<string, unknown> | null) {
     const accountId = typeof body?.accountId === 'string' ? body.accountId : ''
     const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${id}`)
     if (!credential || credential.accountId !== accountId) return json({ error: 'Credential not found' }, 404)
     return credential
   }
+}
+
+function parseAgentApiKey(token: string) {
+  // Agent ids are 16 base64url characters. Keep the split deterministic because
+  // the secret may also contain underscores.
+  const match = token.match(/^vct_agent_([A-Za-z0-9_-]{16})_([A-Za-z0-9_-]{32,80})$/)
+  return match ? { id: match[1]!, secret: match[2]! } : null
 }

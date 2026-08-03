@@ -6,6 +6,7 @@ export interface AuthUser {
   displayName: string
   handle: string
   realtimeClientId: string
+  points?: number
   avatarUrl?: string
   email?: string
   headline?: string
@@ -25,6 +26,7 @@ export interface PublicHumanProfile {
   displayName: string
   handle: string
   realtimeClientId: string
+  points?: number
   avatarUrl?: string
   headline?: string
   bio?: string
@@ -71,6 +73,7 @@ export interface AgentEnrollment {
   id: string
   name: string
   callbackUrl: string
+  callbackMode?: 'hosted' | 'external'
   createdAt: string
   expiresAt: string
   status: 'pending' | 'authorized' | 'delivered' | 'failed'

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AccountStore } from './accounts'
 
-function createStore() {
+function createStore(env?: unknown) {
   const values = new Map<string, unknown>()
   const storage = {
     get: async (key: string) => values.get(key),
@@ -13,7 +13,7 @@ function createStore() {
       else for (const [key, entry] of Object.entries(keyOrEntries)) values.set(key, entry)
     },
   }
-  return new AccountStore({ storage } as unknown as DurableObjectState)
+  return new AccountStore({ storage } as unknown as DurableObjectState, env as never)
 }
 
 function request(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') {
@@ -71,6 +71,36 @@ describe('AccountStore', () => {
     const revoked = await store.fetch(request(`/credentials/${authorization.credential.id}/revoke`, { accountId: account.id }))
     expect(revoked.status).toBe(200)
     expect((await store.fetch(request('/credentials/authenticate', { token: deliveredKey }))).status).toBe(401)
+  })
+
+  it('hosts the callback inbox and lets an agent claim the key without an inbound server', async () => {
+    const store = createStore({ SESSION_SECRET: 'test-session-secret-that-is-long-enough' })
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const callbackId = new URL(url).pathname.split('/').at(-1)
+      const payload = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return store.fetch(request(`/enrollments/${callbackId}/callback`, payload))
+    }))
+    const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-hosted-agent-owner', displayName: 'Hosted Owner', handle: 'hosted-owner',
+    } }))
+    const { account } = await identityResponse.json() as { account: { id: string } }
+    const enrollmentResponse = await store.fetch(request('/enrollments', { name: 'Inbox Scout', hostedCallbackOrigin: 'https://worker.example' }))
+    const created = await enrollmentResponse.json() as { enrollment: { id: string; callbackMode?: string }; deliveryToken: string }
+
+    expect(created.enrollment.callbackMode).toBe('hosted')
+    expect(created.enrollment.id).toBeTruthy()
+    expect((await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))).status).toBe(202)
+
+    const authorized = await store.fetch(request(`/enrollments/${created.enrollment.id}/authorize`, { accountId: account.id }))
+    const authorization = await authorized.json() as { credential: { id: string }; enrollment: { status: string } }
+    expect(authorization.enrollment.status).toBe('delivered')
+
+    const claimed = await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))
+    const payload = await claimed.json() as { apiKey: string; type: string; agent: { name: string } }
+    expect(claimed.status).toBe(200)
+    expect(payload).toMatchObject({ type: 'vibecodingtribe.agent.authorized', agent: { name: 'Inbox Scout' } })
+    expect(payload.apiKey).toMatch(/^vct_agent_/)
+    expect((await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))).status).toBe(202)
   })
 
   it('rejects unsafe callbacks and cross-account identity linking', async () => {
@@ -161,5 +191,60 @@ describe('AccountStore', () => {
     expect(updated.status).toBe(200)
     expect((await updated.json() as { profile: { handle: string } }).profile.handle).toBe('second-builder-v2')
     expect(first.id).not.toBe(second.id)
+  })
+
+  it('awards post and reply points idempotently without rewarding self-replies', async () => {
+    const store = createStore()
+    const firstResponse = await store.fetch(request('/identity/resolve', { identity: { provider: 'github', subject: 'points-first', displayName: 'First Builder', handle: 'first-builder' } }))
+    const secondResponse = await store.fetch(request('/identity/resolve', { identity: { provider: 'github', subject: 'points-second', displayName: 'Second Builder', handle: 'second-builder' } }))
+    const { account: first } = await firstResponse.json() as { account: { id: string } }
+    const { account: second } = await secondResponse.json() as { account: { id: string } }
+
+    expect((await store.fetch(request('/points/award', {
+      channelId: 'general', messageId: 'points-parent-12345678', author: { profileId: first.id },
+    }))).status).toBe(200)
+    const reply = { channelId: 'general', messageId: 'points-reply-12345678', author: { profileId: second.id }, parent: { profileId: first.id } }
+    await store.fetch(request('/points/award', reply))
+    await store.fetch(request('/points/award', reply))
+    await store.fetch(request('/points/award', { channelId: 'general', messageId: 'points-self-12345678', author: { profileId: first.id }, parent: { profileId: first.id } }))
+
+    const firstProfile = await store.fetch(request(`/profile?accountId=${encodeURIComponent(first.id)}`))
+    const secondProfile = await store.fetch(request(`/profile?accountId=${encodeURIComponent(second.id)}`))
+    expect((await firstProfile.json() as { profile: { points: number } }).profile.points).toBe(2)
+    expect((await secondProfile.json() as { profile: { points: number } }).profile.points).toBe(2)
+  })
+
+  it('backfills historical points additively and is safe to rerun', async () => {
+    const history = new Map<string, unknown[]>([['general', []], ['showcases', []], ['feedback', []]])
+    const env = {
+      LIVE_ROOM: {
+        idFromName: (name: string) => name,
+        get: (name: string) => ({ fetch: async (incoming: Request) => Response.json({ messages: history.get(new URL(incoming.url).searchParams.get('channelId') ?? name.split('/').at(-1) ?? 'general') ?? [] }) }),
+      },
+    }
+    const store = createStore(env)
+    const firstResponse = await store.fetch(request('/identity/resolve', { identity: { provider: 'github', subject: 'backfill-first', displayName: 'Backfill First', handle: 'backfill-first' } }))
+    const secondResponse = await store.fetch(request('/identity/resolve', { identity: { provider: 'github', subject: 'backfill-second', displayName: 'Backfill Second', handle: 'backfill-second' } }))
+    const { account: first } = await firstResponse.json() as { account: { id: string } }
+    const { account: second } = await secondResponse.json() as { account: { id: string } }
+
+    for (let index = 0; index < 10; index += 1) {
+      await store.fetch(request('/points/award', { channelId: 'general', messageId: `prior-points-${index}-12345678`, author: { profileId: first.id } }))
+    }
+    history.set('general', [
+      { id: 'backfill-post-12345678', channelId: 'general', profileId: first.id, actorType: 'human', clientId: 'first-client', displayName: 'Backfill First', handle: 'backfill-first', avatarColor: '#657c54', text: 'post', sentAt: '2026-08-01T00:00:00.000Z' },
+      { id: 'backfill-reply-12345678', channelId: 'general', profileId: second.id, actorType: 'human', clientId: 'second-client', displayName: 'Backfill Second', handle: 'backfill-second', avatarColor: '#657c54', text: 'reply', parentId: 'backfill-post-12345678', sentAt: '2026-08-01T00:01:00.000Z' },
+      { id: 'backfill-second-post-12345678', channelId: 'general', profileId: second.id, actorType: 'human', clientId: 'second-client', displayName: 'Backfill Second', handle: 'backfill-second', avatarColor: '#657c54', text: 'another post', sentAt: '2026-08-01T00:02:00.000Z' },
+    ])
+
+    const firstBackfill = await store.fetch(request('/points/backfill', {}))
+    const secondBackfill = await store.fetch(request('/points/backfill', {}))
+    expect(firstBackfill.status).toBe(200)
+    expect(secondBackfill.status).toBe(200)
+
+    const firstProfile = await store.fetch(request(`/profile?accountId=${encodeURIComponent(first.id)}`))
+    const secondProfile = await store.fetch(request(`/profile?accountId=${encodeURIComponent(second.id)}`))
+    expect((await firstProfile.json() as { profile: { points: number } }).profile.points).toBe(10)
+    expect((await secondProfile.json() as { profile: { points: number } }).profile.points).toBe(3)
   })
 })

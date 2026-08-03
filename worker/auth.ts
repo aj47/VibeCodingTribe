@@ -449,6 +449,7 @@ async function publicUser(claims: SessionClaims, env: AuthEnv): Promise<AuthUser
         displayName: account.displayName,
         handle: account.handle,
         realtimeClientId: account.realtimeClientId,
+        points: account.points ?? 0,
         ...(account.avatarUrl ? { avatarUrl: account.avatarUrl } : {}),
         ...(account.email ? { email: account.email } : {}),
         ...(account.headline ? { headline: account.headline } : {}),

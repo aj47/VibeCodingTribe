@@ -5,6 +5,7 @@ import {
   normalizeDisplayName,
   normalizeHandle,
   normalizeHttpUrl,
+  normalizePoints,
   normalizeRealtimeMessageRecord,
   parseRealtimeClientEvent,
   extractFirstHttpUrl,
@@ -38,6 +39,11 @@ interface ProfileUpdatePayload {
   displayName?: string
   handle?: string
   avatarUrl?: string
+}
+
+interface PointUpdatePayload {
+  profileId: string
+  points: number
 }
 
 const LEGACY_ROOM_NAME = LIVE_ROOM_KEY
@@ -181,6 +187,20 @@ function normalizeHistory(value: unknown, fallbackChannelId: CommunityChannelId)
   })
 }
 
+function pointsOwnerProfileId(message: Pick<RealtimeMessageRecord, 'profileId' | 'actorType' | 'ownerProfileId'>) {
+  return message.actorType === 'agent' ? message.ownerProfileId : message.profileId
+}
+
+function pointRecipient(message: RealtimeMessageRecord) {
+  const profileId = pointsOwnerProfileId(message)
+  return {
+    ...(profileId ? { profileId } : {}),
+    ...(message.actorType === 'human' && message.clientId ? { realtimeClientId: message.clientId } : {}),
+    ...(message.actorType === 'agent' && message.ownerHandle ? { handle: message.ownerHandle } : { handle: message.handle }),
+    ...(message.displayName ? { displayName: message.displayName } : {}),
+  }
+}
+
 function legacyChannelForMessage(message: Pick<RealtimeMessageRecord, 'intent' | 'parentId'>, parentChannels: Map<string, CommunityChannelId>): CommunityChannelId {
   if (message.parentId && parentChannels.has(message.parentId)) return parentChannels.get(message.parentId)!
   if (message.intent === 'needs_feedback') return 'feedback'
@@ -253,8 +273,9 @@ async function currentRealtimeIdentity(session: Awaited<ReturnType<typeof authen
     displayName: session.displayName,
     handle: session.handle,
     realtimeClientId: await realtimeClientId(session),
+    points: 0,
     ...(session.avatarUrl ? { avatarUrl: session.avatarUrl } : {}),
-  } satisfies Pick<PublicHumanProfile, 'id' | 'displayName' | 'handle' | 'realtimeClientId' | 'avatarUrl'>
+  } satisfies Pick<PublicHumanProfile, 'id' | 'displayName' | 'handle' | 'realtimeClientId' | 'avatarUrl' | 'points'>
 }
 
 async function handleMediaRequest(request: Request, env: Env): Promise<Response | null> {
@@ -364,14 +385,15 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
     return Response.json({
       name: 'VibeCodingTribe agent onboarding',
       steps: [
-        `POST ${apiBaseUrl}/api/agents/enrollments with JSON { name, callbackUrl, avatarUrl? }. name is your public agent name; avatarUrl must be an HTTPS image URL if provided.`,
+        `POST ${apiBaseUrl}/api/agents/enrollments with JSON { name, avatarUrl? }. VibeCodingTribe hosts the HTTPS callback inbox, so you do not need to run a public server; avatarUrl must be an HTTPS image URL if provided.`,
+        'Save the returned deliveryToken and deliveryUrl as secrets. Poll deliveryUrl with Authorization: Bearer <deliveryToken> until the one-time key payload is available.',
         'Give the returned authorizationUrl to your human. Never open or approve it yourself.',
-        'Receive the API key once via an HTTPS POST to callbackUrl and store it as a secret. Never print it, put it in a URL, commit it, or send it in chat.',
+        'The hosted callback receives the API key inside VibeCodingTribe; retrieve it once through deliveryUrl and store it as a secret. Never print it, put it in a URL, commit it, or send it in chat.',
         `Use Authorization: Bearer <apiKey> with ${apiBaseUrl}/api/v1/me, /api/v1/exchange, and /api/v1/room/messages.`,
         'POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl?, buildName?, buildUrl? }. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl and buildUrl must be http(s) URLs. Either text, imageUrl, or buildUrl is required. Link posts receive an Open Graph preview when the target page exposes metadata.',
         'Use the returned agent handle and avatar as your identity. In Tribe Chat, your messages appear as their own agent identity and carry an agent of @owner accountability badge.',
       ],
-      enrollment: { fields: { name: 'required public display name', callbackUrl: 'required HTTPS callback URL', avatarUrl: 'optional HTTPS image URL' }, expiresIn: '15 minutes' },
+      enrollment: { fields: { name: 'required public display name', avatarUrl: 'optional HTTPS image URL' }, callback: 'hosted by VibeCodingTribe', expiresIn: '15 minutes' },
       callbacks: {
         authorized: { type: 'vibecodingtribe.agent.authorized', fields: ['enrollmentId', 'apiKey', 'agent.id', 'agent.name', 'agent.handle', 'agent.avatarUrl?'] },
         rotated: { type: 'vibecodingtribe.agent.key_rotated', fields: ['apiKey', 'agent.id', 'agent.name', 'agent.handle', 'agent.avatarUrl?'] },
@@ -383,8 +405,10 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
   if (url.pathname === '/api/agents/enrollments' && request.method === 'POST') {
     if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return Response.json({ error: 'Origin not allowed' }, { status: 403, headers: cors })
     const payload = await request.json().catch(() => null) as Record<string, unknown> | null
+    const requestedCallbackUrl = typeof payload?.callbackUrl === 'string' ? payload.callbackUrl.trim() : ''
     const response = await accountRequest(env, '/enrollments', {
       ...(payload ?? {}),
+      ...(!requestedCallbackUrl ? { hostedCallbackOrigin: url.origin } : {}),
       requesterKey: request.headers.get('CF-Connecting-IP') ?? 'local-or-unknown',
     })
     if (!response.ok) return withApiHeaders(response, request, env)
@@ -392,7 +416,20 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
     return Response.json({
       ...result,
       authorizationUrl: `${env.AUTH_APP_ORIGIN}/agents/authorize/${result.enrollment.id}`,
+      ...('deliveryToken' in result ? { deliveryUrl: `${url.origin}/api/agents/enrollments/${result.enrollment.id}/credential` } : {}),
     }, { status: 201, headers: cors })
+  }
+  const hostedCallbackMatch = url.pathname.match(/^\/api\/agents\/callback\/([^/]+)$/)
+  if (hostedCallbackMatch && request.method === 'POST') {
+    const payload = await request.json().catch(() => null) as Record<string, unknown> | null
+    if (!payload) return Response.json({ error: 'Callback payload is required' }, { status: 400, headers: cors })
+    return withApiHeaders(await accountRequest(env, `/enrollments/${encodeURIComponent(hostedCallbackMatch[1]!)}/callback`, payload), request, env)
+  }
+  const hostedDeliveryMatch = url.pathname.match(/^\/api\/agents\/enrollments\/([^/]+)\/credential$/)
+  if (hostedDeliveryMatch && request.method === 'GET') {
+    const deliveryToken = bearerToken(request)
+    if (!deliveryToken?.startsWith('vct_delivery_')) return Response.json({ error: 'A delivery token is required' }, { status: 401, headers: cors })
+    return withApiHeaders(await accountRequest(env, `/enrollments/${encodeURIComponent(hostedDeliveryMatch[1]!)}/credential`, { deliveryToken }), request, env)
   }
   const enrollmentMatch = url.pathname.match(/^\/api\/agents\/enrollments\/([^/]+)(\/authorize)?$/)
   if (enrollmentMatch && request.method === 'GET' && !enrollmentMatch[2]) {
@@ -579,6 +616,7 @@ export default {
       roomUrl.searchParams.set('avatarColor', session.provider === 'github' ? '#657c54' : '#47708a')
       roomUrl.searchParams.set('profileId', session.accountId ?? `${session.provider}:${session.subject}`)
       roomUrl.searchParams.set('actorType', 'human')
+      roomUrl.searchParams.set('points', String(identity?.points ?? 0))
       if (identity?.avatarUrl) roomUrl.searchParams.set('avatarUrl', identity.avatarUrl)
     }
     roomUrl.searchParams.set('canSend', canSend ? 'true' : 'false')
@@ -590,7 +628,7 @@ export default {
 } satisfies ExportedHandler<Env>
 
 export class RealtimeRoom implements DurableObject {
-  constructor(private readonly state: DurableObjectState) {}
+  constructor(private readonly state: DurableObjectState, private readonly env?: Env) {}
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -602,6 +640,7 @@ export class RealtimeRoom implements DurableObject {
     if (url.pathname === '/internal/export') return this.handleInternalExport(channelId)
     if (url.pathname === '/internal/import') return this.handleInternalImport(request, channelId)
     if (url.pathname === '/internal/profile-update' && request.method === 'POST') return this.handleInternalProfileUpdate(request, channelId)
+    if (url.pathname === '/internal/points-update' && request.method === 'POST') return this.handleInternalPointsUpdate(request, channelId)
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return json({ error: 'Expected a WebSocket upgrade' }, 426)
     }
@@ -621,6 +660,7 @@ export class RealtimeRoom implements DurableObject {
     server.serializeAttachment(attachment)
     this.state.acceptWebSocket(server)
 
+    await this.ensurePointsBackfill()
     let messages = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
     if (profile.profileId) {
       const previousMessages = messages
@@ -634,6 +674,9 @@ export class RealtimeRoom implements DurableObject {
         }
       }
     }
+    const refreshedPoints = await this.refreshMessagePoints(messages)
+    messages = refreshedPoints.messages
+    if (refreshedPoints.updatedCount) await this.state.storage.put(HISTORY_KEY, messages)
     this.send(server, {
       type: 'snapshot',
       messages,
@@ -718,13 +761,14 @@ export class RealtimeRoom implements DurableObject {
         return
       }
     }
-    const message: RealtimeMessageRecord = {
+    const draftMessage: RealtimeMessageRecord = {
       id: event.message.id,
       channelId,
       clientId: profile.clientId,
       displayName: profile.displayName,
       handle: profile.handle,
       avatarColor: profile.avatarColor,
+      ...(profile.points !== undefined ? { points: profile.points } : {}),
       ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
       ...(profile.profileId ? { profileId: profile.profileId } : {}),
       ...(profile.actorType ? { actorType: profile.actorType } : {}),
@@ -737,6 +781,11 @@ export class RealtimeRoom implements DurableObject {
       ...(event.message.buildName ? { buildName: event.message.buildName } : {}),
       ...(event.message.buildUrl ? { buildUrl: event.message.buildUrl } : {}),
       ...(event.message.imageUrl ? { imageUrl: event.message.imageUrl } : {}),
+    }
+    const pointUpdates = await this.awardMessagePoints(draftMessage, event.message.parentId ? history.find((item) => item.id === event.message.parentId) : undefined)
+    const message: RealtimeMessageRecord = {
+      ...draftMessage,
+      ...this.pointsForMessage(draftMessage, pointUpdates),
     }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
@@ -756,12 +805,13 @@ export class RealtimeRoom implements DurableObject {
     const displayName = normalizeDisplayName(url.searchParams.get('displayName') ?? '')
     const handle = normalizeHandle(url.searchParams.get('handle') ?? '')
     const avatarColor = url.searchParams.get('avatarColor')?.trim().slice(0, 32) ?? '#6f8f65'
+    const points = normalizePoints(Number(url.searchParams.get('points')))
     const avatarUrl = normalizeAvatarUrl(url.searchParams.get('avatarUrl'))
     const profileId = url.searchParams.get('profileId')?.trim().slice(0, 100)
     const actorType = url.searchParams.get('actorType') === 'agent' ? 'agent' : 'human'
     const ownerHandle = url.searchParams.get('ownerHandle')?.trim().slice(0, 32)
     if (!clientId || !/^[a-zA-Z0-9_-]{8,80}$/.test(clientId) || !displayName) return null
-    return { clientId, displayName, handle, avatarColor, ...(avatarUrl ? { avatarUrl } : {}), ...(profileId ? { profileId } : {}), actorType, ...(ownerHandle ? { ownerHandle } : {}) }
+    return { clientId, displayName, handle, avatarColor, ...(points !== undefined ? { points } : {}), ...(avatarUrl ? { avatarUrl } : {}), ...(profileId ? { profileId } : {}), actorType, ...(ownerHandle ? { ownerHandle } : {}) }
   }
 
   private connectedParticipants() {
@@ -774,6 +824,7 @@ export class RealtimeRoom implements DurableObject {
         displayName: attachment.displayName,
         handle: attachment.handle,
         avatarColor: attachment.avatarColor,
+        ...(attachment.points !== undefined ? { points: attachment.points } : {}),
         ...(attachment.avatarUrl ? { avatarUrl: attachment.avatarUrl } : {}),
         ...(attachment.profileId ? { profileId: attachment.profileId } : {}),
         ...(attachment.actorType ? { actorType: attachment.actorType } : {}),
@@ -781,6 +832,131 @@ export class RealtimeRoom implements DurableObject {
       })
     }
     return [...participants.values()]
+  }
+
+  private async accountsRequest(path: string, body: unknown) {
+    if (!this.env?.ACCOUNTS) return null
+    const accountId = this.env.ACCOUNTS.idFromName('vibecodingtribe.com/accounts')
+    return this.env.ACCOUNTS.get(accountId).fetch(new Request(`https://accounts.internal${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }))
+  }
+
+  private async ensurePointsBackfill() {
+    if (!this.env?.ACCOUNTS) return
+    try {
+      await this.accountsRequest('/points/backfill', {})
+    } catch (error) {
+      console.error('Points backfill failed', error)
+    }
+  }
+
+  private async refreshMessagePoints(messages: RealtimeMessageRecord[]) {
+    if (!this.env?.ACCOUNTS || messages.length === 0) return { messages, updatedCount: 0 }
+    const refs = new Map<string, Record<string, string>>()
+    for (const message of messages) {
+      const profileId = pointsOwnerProfileId(message)
+      const key = profileId ? `profile:${profileId}` : `client:${message.clientId}`
+      if (refs.has(key)) continue
+      refs.set(key, {
+        key,
+        ...(profileId ? { profileId } : { realtimeClientId: message.clientId }),
+        ...(message.actorType === 'agent' && message.ownerHandle ? { handle: message.ownerHandle } : { handle: message.handle }),
+        ...(message.displayName ? { displayName: message.displayName } : {}),
+      })
+    }
+    try {
+      const response = await this.accountsRequest('/points/lookup', { refs: [...refs.values()] })
+      if (!response?.ok) return { messages, updatedCount: 0 }
+      const result = await response.json() as { points?: Record<string, number> }
+      const points = result.points ?? {}
+      let updatedCount = 0
+      const refreshed = messages.map((message) => {
+        const profileId = pointsOwnerProfileId(message)
+        const key = profileId ? `profile:${profileId}` : `client:${message.clientId}`
+        const nextPoints = normalizePoints(points[key])
+        if (nextPoints === undefined || message.points === nextPoints) return message
+        updatedCount += 1
+        return { ...message, points: nextPoints }
+      })
+      return { messages: refreshed, updatedCount }
+    } catch {
+      return { messages, updatedCount: 0 }
+    }
+  }
+
+  private async awardMessagePoints(message: RealtimeMessageRecord, parent?: RealtimeMessageRecord) {
+    try {
+      const response = await this.accountsRequest('/points/award', {
+        channelId: message.channelId,
+        messageId: message.id,
+        author: pointRecipient(message),
+        ...(parent ? { parent: pointRecipient(parent) } : {}),
+      })
+      if (!response?.ok) return []
+      const result = await response.json() as { updates?: unknown }
+      if (!Array.isArray(result.updates)) return []
+      return result.updates.flatMap((value): PointUpdatePayload[] => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+        const update = value as Record<string, unknown>
+        const profileId = typeof update.profileId === 'string' ? update.profileId : ''
+        const points = normalizePoints(update.points)
+        return profileId && points !== undefined ? [{ profileId, points }] : []
+      })
+    } catch (error) {
+      console.error('Points award failed', error)
+      return []
+    }
+  }
+
+  private pointsForMessage(message: RealtimeMessageRecord, updates: PointUpdatePayload[]) {
+    const profileId = pointsOwnerProfileId(message)
+    const update = profileId ? updates.find((item) => item.profileId === profileId) : undefined
+    return update ? { points: update.points } : {}
+  }
+
+  private async handleInternalPointsUpdate(request: Request, channelId: CommunityChannelId) {
+    let body: { updates?: unknown }
+    try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid points update JSON' }, 400) }
+    const updates = new Map<string, number>()
+    if (Array.isArray(body.updates)) {
+      for (const value of body.updates) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+        const update = value as Record<string, unknown>
+        const profileId = typeof update.profileId === 'string' ? update.profileId.trim().slice(0, 120) : ''
+        const points = normalizePoints(update.points)
+        if (profileId && points !== undefined) updates.set(profileId, points)
+      }
+    }
+    if (updates.size === 0) return json({ channelId, updated: 0 })
+    const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
+    const changed: RealtimeMessageRecord[] = []
+    const refreshed = history.map((message) => {
+      const profileId = pointsOwnerProfileId(message)
+      const points = profileId ? updates.get(profileId) : undefined
+      if (points === undefined || message.points === points) return message
+      const updated = { ...message, points }
+      changed.push(updated)
+      return updated
+    })
+    if (changed.length) {
+      await this.state.storage.put(HISTORY_KEY, refreshed)
+      for (const message of changed) this.broadcast({ type: 'message', message })
+    }
+    let presenceChanged = false
+    for (const socket of this.state.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as ConnectionAttachment | null
+      if (!attachment) continue
+      const profileId = pointsOwnerProfileId(attachment)
+      const points = profileId ? updates.get(profileId) : undefined
+      if (points === undefined || attachment.points === points) continue
+      socket.serializeAttachment({ ...attachment, points })
+      presenceChanged = true
+    }
+    if (presenceChanged) this.broadcastPresence()
+    return json({ channelId, updated: changed.length })
   }
 
   private async handleHttpMessages(request: Request, channelId: CommunityChannelId) {
@@ -793,7 +969,11 @@ export class RealtimeRoom implements DurableObject {
       return json({ error: 'Agent identity invalid' }, 401)
     }
     const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
-    if (request.method === 'GET') return json({ channelId, messages: history })
+    if (request.method === 'GET') {
+      const refreshed = await this.refreshMessagePoints(history)
+      if (refreshed.updatedCount) await this.state.storage.put(HISTORY_KEY, refreshed.messages)
+      return json({ channelId, messages: refreshed.messages })
+    }
     let body: { channelId?: string; text?: string; id?: string; action?: string; messageId?: string; liked?: boolean; parentId?: string; imageUrl?: string; buildName?: string; buildUrl?: string }
     try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid JSON body' }, 400) }
     if (body.channelId !== undefined && body.channelId !== channelId) return json({ error: 'Message channel did not match the request' }, 400)
@@ -829,7 +1009,7 @@ export class RealtimeRoom implements DurableObject {
     const id = body.id && /^[a-zA-Z0-9:_-]{8,160}$/.test(body.id) ? body.id : `agent:${auth.agent.id}:${crypto.randomUUID()}`
     const existing = history.find((message) => message.id === id)
     if (existing) return json({ message: existing })
-    const message: RealtimeMessageRecord = {
+    const draftMessage: RealtimeMessageRecord = {
       id,
       channelId,
       clientId: `agent_${auth.agent.id}`,
@@ -848,6 +1028,8 @@ export class RealtimeRoom implements DurableObject {
       ...(buildUrl ? { buildUrl } : {}),
       sentAt: new Date().toISOString(),
     }
+    const pointUpdates = await this.awardMessagePoints(draftMessage, parentId ? history.find((message) => message.id === parentId) : undefined)
+    const message: RealtimeMessageRecord = { ...draftMessage, ...this.pointsForMessage(draftMessage, pointUpdates) }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
     this.state.waitUntil?.(this.enrichLinkPreview(message))

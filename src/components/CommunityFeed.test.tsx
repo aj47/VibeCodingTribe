@@ -8,6 +8,7 @@ const profile: RealtimeProfile = {
   displayName: 'Ada Builder',
   handle: 'ada',
   avatarColor: '#b9d6bd',
+  points: 100,
   profileId: 'human_ada',
 }
 
@@ -64,6 +65,7 @@ describe('CommunityFeed post hierarchy', () => {
     expect(container.querySelectorAll('.community-post--chat')).toHaveLength(1)
     expect(container.querySelectorAll('.community-post--showcase')).toHaveLength(1)
     expect(container.querySelectorAll('.community-post--feedback')).toHaveLength(1)
+    expect(screen.getAllByText('(+100)')).toHaveLength(4)
     const feedbackPost = screen.getByText('Does this value proposition make sense?', { selector: 'article > p' }).closest('article')
     expect(feedbackPost).not.toBeNull()
     expect(within(feedbackPost as HTMLElement).getByText('Feedback request')).toBeInTheDocument()

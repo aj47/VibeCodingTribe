@@ -2,6 +2,7 @@ import {
   normalizeAvatarUrl,
   normalizeDisplayName,
   normalizeHandle,
+  normalizePoints,
   parseRealtimeServerEvent,
   type RealtimeClientEvent,
   type RealtimeSendEvent,
@@ -46,6 +47,7 @@ export function loadRealtimeProfile(): RealtimeProfile {
           displayName: normalizeDisplayName(value.displayName),
           handle: normalizeHandle(value.handle),
           avatarColor: value.avatarColor,
+          ...(normalizePoints(value.points) !== undefined ? { points: normalizePoints(value.points) } : {}),
           ...(normalizeAvatarUrl(value.avatarUrl) ? { avatarUrl: normalizeAvatarUrl(value.avatarUrl) } : {}),
         }
       }
@@ -86,6 +88,7 @@ export function realtimeWebSocketUrl(profile: RealtimeProfile, channelId: Commun
   url.searchParams.set('handle', profile.handle)
   url.searchParams.set('channelId', channelId)
   url.searchParams.set('avatarColor', profile.avatarColor)
+  if (profile.points !== undefined) url.searchParams.set('points', String(profile.points))
   if (profile.avatarUrl) url.searchParams.set('avatarUrl', profile.avatarUrl)
   return url.toString()
 }
