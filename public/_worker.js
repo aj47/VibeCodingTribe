@@ -85,6 +85,36 @@ function metaTag(kind, value) {
   return `<meta ${kind.startsWith('twitter:') || kind === 'description' ? 'name' : 'property'}="${escapeHtml(kind)}" content="${escapeHtml(value)}">`
 }
 
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' https: data: blob:",
+  "media-src 'self' https: blob:",
+  "connect-src 'self' https://vibecodingtribe-realtime.techfren.workers.dev wss://vibecodingtribe-realtime.techfren.workers.dev",
+  "frame-src https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com https://www.dailymotion.com",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+  'upgrade-insecure-requests',
+].join('; ')
+
+function isLocalRequest(url) {
+  return url.hostname === 'localhost' || url.hostname === '127.0.0.1'
+}
+
+function secureResponse(response) {
+  const headers = new Headers(response.headers)
+  headers.set('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+  headers.set('X-Frame-Options', 'DENY')
+  headers.set('X-Content-Type-Options', 'nosniff')
+  headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()')
+  headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+}
+
 function injectPostMetadata(html, requestUrl, post, imageUrl) {
   const title = truncate(post.text || post.buildName || `${post.displayName || 'Builder'} shared a post`, 180)
   const description = truncate(post.text || `${post.displayName || 'A builder'} shared a ${postLabel(post).toLowerCase()} in the VibeCodingTribe workshop.`, 320)
@@ -125,32 +155,36 @@ async function staticAsset(request, env, path = null) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
+    if (url.protocol !== 'https:' && !isLocalRequest(url)) {
+      url.protocol = 'https:'
+      return Response.redirect(url.toString(), 308)
+    }
     const postId = validPostId(url.searchParams.get('post'))
 
     if (url.pathname === '/og/post' && request.method === 'GET') {
       const id = validPostId(url.searchParams.get('id'))
       const post = id ? await loadPost(id) : null
       if (!post) return staticAsset(request, env, '/og-image.png')
-      return new Response(renderOgImage(post), {
+      return secureResponse(new Response(renderOgImage(post), {
         headers: {
           'Cache-Control': 'public, max-age=60, s-maxage=300',
           'Content-Type': 'image/svg+xml; charset=UTF-8',
           'X-Content-Type-Options': 'nosniff',
         },
-      })
+      }))
     }
 
     if (postId && request.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       const post = await loadPost(postId)
       const asset = await staticAsset(request, env)
-      if (!post || !asset.headers.get('content-type')?.includes('text/html')) return asset
+      if (!post || !asset.headers.get('content-type')?.includes('text/html')) return secureResponse(asset)
       const imageUrl = new URL(`/og/post?id=${encodeURIComponent(postId)}`, request.url).href
       const headers = new Headers(asset.headers)
       headers.set('Cache-Control', 'public, max-age=60, s-maxage=300')
       headers.set('Content-Type', 'text/html; charset=UTF-8')
-      return new Response(injectPostMetadata(await asset.text(), request.url, post, imageUrl), { status: asset.status, headers })
+      return secureResponse(new Response(injectPostMetadata(await asset.text(), request.url, post, imageUrl), { status: asset.status, headers }))
     }
 
-    return staticAsset(request, env)
+    return secureResponse(await staticAsset(request, env))
   },
 }

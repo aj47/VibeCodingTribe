@@ -102,7 +102,7 @@ The delivery token and API key are secrets. Never print either one, place either
   async function changeKey(credential: AgentCredentialSummary, action: 'rotate' | 'revoke') {
     const confirmed = window.confirm(action === 'revoke'
       ? `Revoke ${credential.name}? Its API access will stop immediately.`
-      : `Rotate ${credential.name}? A replacement key will be sent to its saved callback, then this key will be revoked.`)
+      : `Rotate ${credential.name}? A replacement key will be placed in its hosted inbox, then this key will be revoked.`)
     if (!confirmed) return
     setPendingId(credential.id)
     setNotice(null)
@@ -114,7 +114,7 @@ The delivery token and API key are secrets. Never print either one, place either
       } else {
         const refreshed = await loadAgentCredentials()
         setCredentials(refreshed.credentials)
-        setNotice(`A replacement key was delivered to ${credential.name}’s callback. The previous key is revoked.`)
+        setNotice(`A replacement key was placed in ${credential.name}’s hosted inbox. The previous key is revoked.`)
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'The credential could not be changed')

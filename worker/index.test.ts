@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import worker from './index'
+import worker, { cleanupExpiredMedia } from './index'
 
 describe('public room access', () => {
+  it('redirects public Worker HTTP requests to HTTPS', async () => {
+    const response = await worker.fetch(new Request('http://worker.example/health'), {} as never)
+    expect(response.status).toBe(308)
+    expect(response.headers.get('Location')).toBe('https://worker.example/health')
+  })
+
   it('forwards anonymous viewers to the room as read-only connections', async () => {
     const roomFetch = vi.fn((request: Request) => Response.json({ url: request.url }))
     const env = {
@@ -84,7 +90,7 @@ describe('public room access', () => {
       LIVE_ROOM: {},
       EXCHANGE_STATE: {},
     }
-    const request = new Request('http://worker.example/api/exchange', {
+    const request = new Request('https://worker.example/api/exchange', {
       headers: { Origin: 'http://localhost:4173', 'X-VCT-Demo-User': 'user_a' },
     })
 
@@ -116,7 +122,7 @@ describe('public room access', () => {
       EXCHANGE_STATE: {},
       ACCOUNTS: {},
     }
-    const response = await worker.fetch(new Request('http://worker.example/api/uploads/images', {
+    const response = await worker.fetch(new Request('http://localhost:8787/api/uploads/images', {
       method: 'POST',
       headers: { Origin: 'http://localhost:4173', 'Content-Type': 'image/png' },
       body: new Uint8Array([137, 80, 78, 71]),
@@ -124,9 +130,29 @@ describe('public room access', () => {
     const result = await response.json() as { url: string }
 
     expect(response.status).toBe(201)
-    expect(result.url).toMatch(/^http:\/\/worker\.example\/media\/[a-f0-9-]+\.png$/)
+    expect(result.url).toMatch(/^http:\/\/localhost:8787\/media\/[a-f0-9-]+\.png$/)
     expect(put).toHaveBeenCalledOnce()
     expect(put.mock.calls[0]?.[0]).toMatch(/\.png$/)
+  })
+
+  it('deletes uploaded media after the bounded retention period', async () => {
+    const remove = vi.fn(async (...args: [string[]]) => { void args })
+    const now = Date.parse('2026-08-03T00:00:00.000Z')
+    const env = {
+      MEDIA: {
+        list: vi.fn(async () => ({
+          objects: [
+            { key: 'expired.png', uploaded: new Date('2026-04-01T00:00:00.000Z') },
+            { key: 'recent.png', uploaded: new Date('2026-08-01T00:00:00.000Z') },
+          ],
+          truncated: false,
+        })),
+        delete: remove,
+      },
+    }
+
+    await expect(cleanupExpiredMedia(env as never, now)).resolves.toEqual({ scanned: 2, deleted: 1 })
+    expect(remove).toHaveBeenCalledWith(['expired.png'])
   })
 
   it('creates hosted agent delivery URLs when no callback server is supplied', async () => {

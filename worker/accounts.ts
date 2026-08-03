@@ -20,6 +20,8 @@ export interface HumanAccount extends PublicHumanProfile {
   updatedAt: string
   badges?: ProfileBadgeAward[]
   pointsBackfillVersion?: number
+  pointAwardDay?: string
+  pointAwardCount?: number
 }
 
 interface AgentEnrollmentRecord {
@@ -112,6 +114,7 @@ const RATE_LIMIT = 60
 const RATE_WINDOW_MS = 60_000
 const ENROLLMENT_LIMIT = 10
 const ENROLLMENT_WINDOW_MS = 60 * 60_000
+const MAX_POINTS_PER_DAY = 20
 const POINTS_BACKFILL_KEY = 'points:backfill:v1'
 const POINTS_BACKFILL_VERSION = 1
 const POINTS_EVENT_PREFIX = 'points:event:v1:'
@@ -274,18 +277,6 @@ function credentialSummary(credential: AgentCredentialRecord) {
   }
 }
 
-function validCallback(value: unknown) {
-  if (typeof value !== 'string' || value.length > 2048) return null
-  try {
-    const url = new URL(value)
-    if (url.protocol !== 'https:' || url.username || url.password) return null
-    if (url.hostname === 'localhost' || url.hostname.endsWith('.local') || /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname)) return null
-    return url.toString()
-  } catch {
-    return null
-  }
-}
-
 function validHostedCallbackOrigin(value: unknown) {
   if (typeof value !== 'string' || value.length > 512) return null
   try {
@@ -373,6 +364,7 @@ export class AccountStore implements DurableObject {
     if (url.pathname.startsWith('/enrollments/') && request.method === 'GET') return this.getEnrollment(url.pathname.split('/')[2] ?? '')
     if (url.pathname.match(/^\/enrollments\/[^/]+\/authorize$/) && request.method === 'POST') return this.authorizeEnrollment(url.pathname.split('/')[2] ?? '', body)
     if (url.pathname === '/credentials/authenticate' && request.method === 'POST') return this.authenticateCredential(body)
+    if (url.pathname === '/limits/consume' && request.method === 'POST') return this.consumeLimit(body)
     if (url.pathname === '/credentials' && request.method === 'GET') return this.listCredentials(url.searchParams.get('accountId'))
     if (url.pathname.match(/^\/credentials\/[^/]+\/(revoke|rotate)$/) && request.method === 'POST') {
       const [, , credentialId, action] = url.pathname.split('/')
@@ -617,10 +609,17 @@ export class AccountStore implements DurableObject {
     const authorAccount = await this.findAccount(author, accounts)
     const parentAccount = parent ? await this.findAccount(parent, accounts) : undefined
     const awards = new Map<string, PointAward>()
+    const awardCounts = new Map<string, number>()
+    const today = new Date().toISOString().slice(0, 10)
     const add = (account: HumanAccount | undefined, points: number) => {
       if (!account) return
+      const earnedToday = account.pointAwardDay === today ? account.pointAwardCount ?? 0 : 0
+      const alreadyQueued = awardCounts.get(account.id) ?? 0
+      const granted = Math.min(points, Math.max(0, MAX_POINTS_PER_DAY - earnedToday - alreadyQueued))
+      if (granted <= 0) return
       const previous = awards.get(account.id)
-      awards.set(account.id, { accountId: account.id, points: (previous?.points ?? 0) + points })
+      awards.set(account.id, { accountId: account.id, points: (previous?.points ?? 0) + granted })
+      awardCounts.set(account.id, alreadyQueued + granted)
     }
 
     if (!parent) add(authorAccount, 1)
@@ -640,6 +639,8 @@ export class AccountStore implements DurableObject {
       writes[`${ACCOUNT_PREFIX}${account.id}`] = {
         ...account,
         points: nextPoints,
+        pointAwardDay: today,
+        pointAwardCount: (account.pointAwardDay === today ? account.pointAwardCount ?? 0 : 0) + award.points,
         updatedAt: new Date().toISOString(),
       } satisfies HumanAccount
       writes[ledgerKey] = { accountId: account.id, points: award.points, version: POINTS_BACKFILL_VERSION }
@@ -719,10 +720,11 @@ export class AccountStore implements DurableObject {
     const name = safeString(body?.name, 64)
     const requestedCallbackUrl = typeof body?.callbackUrl === 'string' ? body.callbackUrl.trim() : ''
     const hostedCallbackOrigin = validHostedCallbackOrigin(body?.hostedCallbackOrigin)
-    const hosted = !requestedCallbackUrl
-    const callbackUrl = hosted ? hostedCallbackOrigin : validCallback(requestedCallbackUrl)
+    if (requestedCallbackUrl) return json({ error: 'External agent callbacks are temporarily disabled. Create a hosted delivery enrollment instead.' }, 403)
+    const hosted = true
+    const callbackUrl = hostedCallbackOrigin
     const avatarUrl = validAgentAvatarUrl(body?.avatarUrl)
-    if (!name || !callbackUrl || avatarUrl === null) return json({ error: hosted ? 'A name and valid VibeCodingTribe callback origin are required' : 'A name, public HTTPS callback URL, and optional HTTPS avatar URL are required' }, 400)
+    if (!name || !callbackUrl || avatarUrl === null) return json({ error: 'A name and valid VibeCodingTribe callback origin are required' }, 400)
     const requesterKey = safeString(body?.requesterKey, 160) || 'unknown'
     const rateKey = `enrollment-rate:${await sha256(requesterKey)}`
     const previousRate = await this.state.storage.get<{ startedAt: number; count: number }>(rateKey)
@@ -776,42 +778,28 @@ export class AccountStore implements DurableObject {
     if (!account) return json({ error: 'Human account not found' }, 404)
     if (enrollment.status !== 'pending') return json({ error: 'This authorization request was already used' }, 409)
     const hosted = enrollment.callbackMode === 'hosted'
+    if (!hosted) return json({ error: 'External agent callbacks are temporarily disabled. Create a new hosted delivery enrollment.' }, 409)
     const issued = await this.issueCredential(account, enrollment.name, enrollment.callbackUrl, enrollment.avatarUrl, hosted ? enrollment.id : undefined)
     const credential = issued.credential
     enrollment.ownerAccountId = account.id
     enrollment.activeCredentialId = credential.id
     enrollment.status = 'authorized'
     await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
-    try {
-      const response = await fetch(enrollment.callbackUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'VibeCodingTribe-Agent-Authorization/1.0' },
-        body: JSON.stringify({
-          type: 'vibecodingtribe.agent.authorized',
-          enrollmentId: enrollment.id,
-          apiKey: issued.apiKey,
-          agent: { id: credential.id, name: credential.name, handle: credential.handle || agentHandle(credential.name, credential.id), ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}) },
-          owner: publicProfile(account),
-        }),
-      })
-      if (!response.ok) throw new Error(`Callback returned ${response.status}`)
-      if (hosted) {
-        const delivered = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
-        return json({ enrollment: { id, name: enrollment.name, status: delivered?.status ?? 'delivered' }, credential: credentialSummary(credential) })
-      }
-      enrollment.status = 'delivered'
-      await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
-      return json({ enrollment: { id, name: enrollment.name, status: enrollment.status }, credential: credentialSummary(credential) })
-    } catch (error) {
-      enrollment.status = 'failed'
-      enrollment.deliveryError = error instanceof Error ? error.message.slice(0, 160) : 'Callback delivery failed'
-      credential.revokedAt = new Date().toISOString()
-      await this.state.storage.put({
-        [`${ENROLLMENT_PREFIX}${id}`]: enrollment,
-        [`${CREDENTIAL_PREFIX}${credential.id}`]: credential,
-      })
-      return json({ error: 'The callback could not receive the API key. No active key was created.' }, 502)
+    const payload = {
+      type: 'vibecodingtribe.agent.authorized',
+      enrollmentId: enrollment.id,
+      apiKey: issued.apiKey,
+      agent: { id: credential.id, name: credential.name, handle: credential.handle || agentHandle(credential.name, credential.id), ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}) },
+      owner: publicProfile(account),
     }
+    const received = await this.receiveHostedDelivery(id, payload)
+    if (!received.ok) {
+      credential.revokedAt = new Date().toISOString()
+      await this.state.storage.put(`${CREDENTIAL_PREFIX}${credential.id}`, credential)
+      return json({ error: 'The hosted delivery could not be prepared. No active key was created.' }, 502)
+    }
+    const delivered = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
+    return json({ enrollment: { id, name: enrollment.name, status: delivered?.status ?? 'delivered' }, credential: credentialSummary(credential) })
   }
 
   private async issueCredential(account: HumanAccount, name: string, callbackUrl: string, avatarUrl?: string, enrollmentId?: string) {
@@ -872,6 +860,30 @@ export class AccountStore implements DurableObject {
     return json(result)
   }
 
+  /**
+   * Internal Worker-only fixed-window limiter. Each subject keeps one small
+   * record per scope, rather than an unbounded record per request.
+   */
+  private async consumeLimit(body: Record<string, unknown> | null) {
+    const scope = safeString(body?.scope, 80)
+    const subject = safeString(body?.subject, 240)
+    const limit = typeof body?.limit === 'number' && Number.isSafeInteger(body.limit) ? body.limit : 0
+    const windowMs = typeof body?.windowMs === 'number' && Number.isSafeInteger(body.windowMs) ? body.windowMs : 0
+    if (!scope || !subject || limit < 1 || limit > 10_000 || windowMs < 1_000 || windowMs > 86_400_000) return json({ error: 'Rate limit request was invalid' }, 400)
+    const key = `limit:${scope}:${await sha256(subject)}`
+    const now = Date.now()
+    const previous = await this.state.storage.get<{ startedAt: number; count: number }>(key)
+    const record = !previous || now - previous.startedAt >= windowMs
+      ? { startedAt: now, count: 0 }
+      : previous
+    if (record.count >= limit) {
+      return json({ allowed: false, remaining: 0, resetAt: new Date(record.startedAt + windowMs).toISOString() }, 429)
+    }
+    record.count += 1
+    await this.state.storage.put(key, record)
+    return json({ allowed: true, remaining: limit - record.count, resetAt: new Date(record.startedAt + windowMs).toISOString() })
+  }
+
   private async listCredentials(accountId: string | null) {
     if (!accountId) return json({ error: 'Account not found' }, 404)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
@@ -905,22 +917,22 @@ export class AccountStore implements DurableObject {
     if (credential.revokedAt) return json({ error: 'Revoked keys cannot be rotated' }, 409)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
     if (!account) return json({ error: 'Account not found' }, 404)
+    if (!credential.enrollmentId) return json({ error: 'External agent callbacks are temporarily disabled. Re-enroll this agent with hosted delivery.' }, 409)
     const issued = await this.issueCredential(account, credential.name, credential.callbackUrl, credential.avatarUrl, credential.enrollmentId)
-    try {
-      const response = await fetch(credential.callbackUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'VibeCodingTribe-Agent-Rotation/1.0' },
-        body: JSON.stringify({ type: 'vibecodingtribe.agent.key_rotated', apiKey: issued.apiKey, agent: { id: issued.credential.id, name: issued.credential.name, handle: issued.credential.handle || agentHandle(issued.credential.name, issued.credential.id), ...(issued.credential.avatarUrl ? { avatarUrl: issued.credential.avatarUrl } : {}) } }),
-      })
-      if (!response.ok) throw new Error('Callback rejected the rotated key')
+    const received = await this.receiveHostedDelivery(credential.enrollmentId, {
+      type: 'vibecodingtribe.agent.key_rotated',
+      enrollmentId: credential.enrollmentId,
+      apiKey: issued.apiKey,
+      agent: { id: issued.credential.id, name: issued.credential.name, handle: issued.credential.handle || agentHandle(issued.credential.name, issued.credential.id), ...(issued.credential.avatarUrl ? { avatarUrl: issued.credential.avatarUrl } : {}) },
+    })
+    if (received.ok) {
       credential.revokedAt = new Date().toISOString()
       await this.state.storage.put(`${CREDENTIAL_PREFIX}${credential.id}`, credential)
       return json({ credential: credentialSummary(issued.credential), replacedCredentialId: credential.id })
-    } catch {
-      issued.credential.revokedAt = new Date().toISOString()
-      await this.state.storage.put(`${CREDENTIAL_PREFIX}${issued.credential.id}`, issued.credential)
-      return json({ error: 'The callback could not receive the rotated key. The current key remains active.' }, 502)
     }
+    issued.credential.revokedAt = new Date().toISOString()
+    await this.state.storage.put(`${CREDENTIAL_PREFIX}${issued.credential.id}`, issued.credential)
+    return json({ error: 'The hosted delivery could not be prepared. The current key remains active.' }, 502)
   }
 
   private async receiveHostedDelivery(id: string, body: Record<string, unknown> | null) {

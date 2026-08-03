@@ -46,21 +46,18 @@ describe('AccountStore', () => {
 
   it('delivers a key once, rate limits it, and revokes it', async () => {
     const store = createStore()
-    let deliveredKey = ''
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      deliveredKey = (JSON.parse(String(init?.body)) as { apiKey: string }).apiKey
-      return new Response(null, { status: 204 })
-    }))
     const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
       provider: 'github', subject: 'gh-owner', displayName: 'Owner', handle: 'owner',
     } }))
     const { account } = await identityResponse.json() as { account: { id: string } }
-    const enrollmentResponse = await store.fetch(request('/enrollments', { name: 'Scout', callbackUrl: 'https://agent.example/callback' }))
-    const { enrollment } = await enrollmentResponse.json() as { enrollment: { id: string } }
+    const enrollmentResponse = await store.fetch(request('/enrollments', { name: 'Scout', hostedCallbackOrigin: 'https://worker.example' }))
+    const { enrollment, deliveryToken } = await enrollmentResponse.json() as { enrollment: { id: string }; deliveryToken: string }
 
     const authorized = await store.fetch(request(`/enrollments/${enrollment.id}/authorize`, { accountId: account.id }))
     const authorization = await authorized.json() as { credential: { id: string }; enrollment: { status: string } }
     expect(authorization.enrollment.status).toBe('delivered')
+    const delivered = await store.fetch(request(`/enrollments/${enrollment.id}/credential`, { deliveryToken }))
+    const { apiKey: deliveredKey } = await delivered.json() as { apiKey: string }
     expect(deliveredKey).toMatch(/^vct_agent_/)
 
     for (let index = 0; index < 60; index += 1) {
@@ -105,8 +102,8 @@ describe('AccountStore', () => {
 
   it('rejects unsafe callbacks and cross-account identity linking', async () => {
     const store = createStore()
-    const unsafe = await store.fetch(request('/enrollments', { name: 'Local agent', callbackUrl: 'http://127.0.0.1:3000/callback' }))
-    expect(unsafe.status).toBe(400)
+    const unsafe = await store.fetch(request('/enrollments', { name: 'External agent', callbackUrl: 'https://agent.example/callback' }))
+    expect(unsafe.status).toBe(403)
 
     const first = await store.fetch(request('/identity/resolve', { identity: { provider: 'github', subject: 'shared', displayName: 'One', handle: 'one' } }))
     const { account: firstAccount } = await first.json() as { account: { id: string } }
@@ -117,19 +114,22 @@ describe('AccountStore', () => {
     expect(conflict.status).toBe(409)
   })
 
+  it('enforces fixed-window limits without storing one record per request', async () => {
+    const store = createStore()
+    const input = { scope: 'upload-account', subject: 'human_123', limit: 2, windowMs: 60_000 }
+    expect((await store.fetch(request('/limits/consume', input))).status).toBe(200)
+    expect((await store.fetch(request('/limits/consume', input))).status).toBe(200)
+    expect((await store.fetch(request('/limits/consume', input))).status).toBe(429)
+  })
+
   it('keeps an agent avatar and standalone identity separate from its owner', async () => {
     const store = createStore()
-    let delivered: { agent?: { name: string; handle: string; avatarUrl?: string } } = {}
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      delivered = JSON.parse(String(init?.body)) as typeof delivered
-      return new Response(null, { status: 204 })
-    }))
     const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
       provider: 'github', subject: 'gh-agent-owner', displayName: 'Owner', handle: 'owner',
     } }))
     const { account } = await identityResponse.json() as { account: { id: string } }
     const enrollmentResponse = await store.fetch(request('/enrollments', {
-      name: 'Scout', callbackUrl: 'https://agent.example/callback', avatarUrl: 'https://cdn.example/scout.png',
+      name: 'Scout', hostedCallbackOrigin: 'https://worker.example', avatarUrl: 'https://cdn.example/scout.png',
     }))
     const { enrollment } = await enrollmentResponse.json() as { enrollment: { id: string } }
 
@@ -140,7 +140,6 @@ describe('AccountStore', () => {
 
     expect(authorization.credential.avatarUrl).toBe('https://cdn.example/scout.png')
     expect(authorization.credential.handle).toBe('scout')
-    expect(delivered.agent).toEqual({ id: expect.any(String), name: 'Scout', handle: 'scout', avatarUrl: 'https://cdn.example/scout.png' })
     expect(profileResult.profile).toMatchObject({ displayName: 'Scout', handle: 'scout', avatarUrl: 'https://cdn.example/scout.png', ownerHandle: 'owner', actorType: 'agent' })
   })
 

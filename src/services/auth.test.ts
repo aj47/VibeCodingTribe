@@ -38,7 +38,8 @@ describe('persistent authentication', () => {
     expect(window.sessionStorage.getItem(SESSION_TOKEN_KEY)).toBeNull()
   })
 
-  it('persists a refreshed session returned during validation', async () => {
+  it('does not roll a browser token forward during session validation', async () => {
+    window.localStorage.setItem(SESSION_TOKEN_KEY, 'existing.short-session')
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       user: {
         id: 'github:47',
@@ -47,13 +48,12 @@ describe('persistent authentication', () => {
         handle: 'aj47',
         realtimeClientId: 'github_client_12345678',
       },
-      expiresAt: '2026-08-18T00:00:00.000Z',
-      sessionToken: 'refreshed.thirty-day-token',
+      expiresAt: '2026-08-03T18:00:00.000Z',
     })))
 
     const session = await loadAuthSession('existing.short-session')
 
     expect(session?.user.handle).toBe('aj47')
-    expect(window.localStorage.getItem(SESSION_TOKEN_KEY)).toBe('refreshed.thirty-day-token')
+    expect(window.localStorage.getItem(SESSION_TOKEN_KEY)).toBe('existing.short-session')
   })
 })

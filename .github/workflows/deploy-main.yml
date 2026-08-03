@@ -16,9 +16,6 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Check out main
         uses: actions/checkout@v4
@@ -33,10 +30,20 @@ jobs:
         run: npm ci
 
       - name: Validate source
-        run: npm run typecheck
+        run: |
+          npm run typecheck
+          npx tsc -p tsconfig.worker.json --noEmit
+          npm run lint
+          npm test
 
       - name: Deploy frontend
         run: npm run deploy:cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy realtime worker
         run: npm run deploy:realtime
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

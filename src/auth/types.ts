@@ -18,7 +18,6 @@ export interface AuthUser {
 export interface AuthSession {
   user: AuthUser
   expiresAt: string
-  sessionToken?: string
 }
 
 export interface PublicHumanProfile {

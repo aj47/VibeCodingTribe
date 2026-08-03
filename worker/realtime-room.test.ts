@@ -172,6 +172,20 @@ describe('RealtimeRoom channel isolation', () => {
     expect(messages[0]).toMatchObject({ id: 'feedback_parent_1', channelId: 'feedback', likedByClientIds: ['client_builder_1234'] })
   })
 
+  it('throttles excessive websocket messages from one authenticated participant', async () => {
+    const state = createState()
+    const room = new RealtimeRoom(state as never)
+    const client = socket('general')
+    for (let index = 0; index < 20; index += 1) {
+      await room.webSocketMessage(client as never, JSON.stringify({ type: 'send', message: { id: `rate_message_${index}_12345678`, channelId: 'general', text: 'message' } }))
+    }
+    await room.webSocketMessage(client as never, JSON.stringify({ type: 'send', message: { id: 'rate_message_over_12345678', channelId: 'general', text: 'message' } }))
+
+    expect(JSON.parse(client.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({ message: expect.stringMatching(/too quickly/) })
+    const exported = await room.fetch(new Request('https://internal/internal/export?channelId=general'))
+    expect((await exported.json() as { messages: unknown[] }).messages).toHaveLength(20)
+  })
+
   it('filters agent reads by message id or timestamp and returns the next cursor', async () => {
     const room = new RealtimeRoom(createState([
       { id: 'agent_read_1', channelId: 'general', clientId: 'client_12345678', displayName: 'Builder', handle: 'builder', avatarColor: '#657c54', text: 'first', sentAt: '2026-08-03T10:00:00.000Z' },

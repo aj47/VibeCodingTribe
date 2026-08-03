@@ -1,4 +1,4 @@
-import type { RealtimeLinkPreview, RealtimeMessageRecord, RealtimeProfile, RealtimeServerEvent } from '../src/realtime/protocol'
+import type { RealtimeMessageRecord, RealtimeProfile, RealtimeServerEvent } from '../src/realtime/protocol'
 import {
   LIVE_ROOM_KEY,
   normalizeAvatarUrl,
@@ -8,10 +8,9 @@ import {
   normalizePoints,
   normalizeRealtimeMessageRecord,
   parseRealtimeClientEvent,
-  extractFirstHttpUrl,
 } from '../src/realtime/protocol'
 import { channelRoomName, DEFAULT_CHANNEL_ID, isCommunityChannelId, normalizeCommunityChannelId, type CommunityChannelId } from '../src/community/channels'
-import { authenticateRequest, handleAuthRequest, realtimeClientId, type AuthEnv } from './auth'
+import { authenticateRequest, handleAuthRequest, hasRecentAuthentication, realtimeClientId, type AuthEnv } from './auth'
 import { accountRequest } from './auth'
 import type { AgentAuthResult } from './accounts'
 import type { ExchangeActor } from './exchange'
@@ -51,108 +50,15 @@ const ROOM_NAME = channelRoomName(DEFAULT_CHANNEL_ID)
 const HISTORY_KEY = 'messages'
 const MIGRATION_KEY = 'legacy-migration-v1'
 const HISTORY_LIMIT = 200
-const LINK_PREVIEW_MAX_HTML_BYTES = 512 * 1024
-const LINK_PREVIEW_TIMEOUT_MS = 2_500
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const MEDIA_RETENTION_MS = 90 * 24 * 60 * 60_000
+const MEDIA_CLEANUP_PAGE_LIMIT = 1_000
+const MEDIA_CLEANUP_MAX_PAGES = 10
 const IMAGE_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
   'image/gif': 'gif',
-}
-
-function isSafePreviewUrl(value: string) {
-  try {
-    const url = new URL(value)
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return false
-    const hostname = url.hostname.toLowerCase()
-    if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) return false
-    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(hostname)) return false
-    const private172 = hostname.match(/^172\.(\d{1,3})\./)
-    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return false
-    return true
-  } catch {
-    return false
-  }
-}
-
-function decodeHtml(value: string) {
-  return value
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#x([\da-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number(decimal)))
-}
-
-function tagAttributes(tag: string) {
-  const attributes = new Map<string, string>()
-  for (const match of tag.matchAll(/([:\w-]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g)) {
-    attributes.set(match[1]!.toLowerCase(), decodeHtml(match[2]!.replace(/^['"]|['"]$/g, '')))
-  }
-  return attributes
-}
-
-function metadataValue(tags: string[], names: string[]) {
-  for (const tag of tags) {
-    const attributes = tagAttributes(tag)
-    const key = (attributes.get('property') ?? attributes.get('name') ?? '').toLowerCase()
-    if (names.includes(key)) return attributes.get('content')?.trim()
-  }
-  return undefined
-}
-
-function resolvePreviewAsset(value: string | undefined, baseUrl: string) {
-  if (!value) return undefined
-  try {
-    return normalizeHttpUrl(new URL(value, baseUrl).toString())
-  } catch {
-    return undefined
-  }
-}
-
-function parseLinkPreview(html: string, url: string): RealtimeLinkPreview | undefined {
-  const tags = [...html.matchAll(/<meta\b[^>]*>/gi)].map((match) => match[0])
-  const titleTag = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]
-  const title = metadataValue(tags, ['og:title', 'twitter:title']) ?? (titleTag ? decodeHtml(titleTag).replace(/\s+/g, ' ').trim() : undefined)
-  const description = metadataValue(tags, ['og:description', 'twitter:description'])
-  const imageUrl = resolvePreviewAsset(metadataValue(tags, ['og:image', 'twitter:image']), url)
-  const siteName = metadataValue(tags, ['og:site_name']) ?? (() => {
-    try { return new URL(url).hostname.replace(/^www\./, '') } catch { return undefined }
-  })()
-  if (!title && !description && !imageUrl) return undefined
-  return {
-    url,
-    ...(title ? { title: title.slice(0, 180) } : {}),
-    ...(description ? { description: description.slice(0, 320) } : {}),
-    ...(imageUrl ? { imageUrl } : {}),
-    ...(siteName ? { siteName: siteName.slice(0, 80) } : {}),
-  }
-}
-
-async function fetchLinkPreview(url: string): Promise<RealtimeLinkPreview | undefined> {
-  if (!isSafePreviewUrl(url)) return undefined
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'VibeCodingTribe Link Preview/1.0' },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(LINK_PREVIEW_TIMEOUT_MS),
-    })
-    if (!response.ok || !response.headers.get('content-type')?.toLowerCase().includes('text/html')) return undefined
-    if (response.headers.get('content-length') && Number(response.headers.get('content-length')) > LINK_PREVIEW_MAX_HTML_BYTES) return undefined
-    const html = (await response.text()).slice(0, LINK_PREVIEW_MAX_HTML_BYTES)
-    const finalUrl = normalizeHttpUrl(response.url) ?? url
-    if (!isSafePreviewUrl(finalUrl)) return undefined
-    return parseLinkPreview(html, finalUrl)
-  } catch {
-    return undefined
-  }
-}
-
-function previewTarget(message: Pick<RealtimeMessageRecord, 'text' | 'buildUrl'>) {
-  return message.buildUrl ?? extractFirstHttpUrl(message.text)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -253,6 +159,38 @@ function isLocalPreviewRequest(request: Request, env: Env) {
   return env.LOCAL_PREVIEW === 'true' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
 }
 
+function isLocalRequest(request: Request) {
+  const hostname = new URL(request.url).hostname
+  return hostname === 'localhost' || hostname === '127.0.0.1'
+}
+
+function httpsRedirect(request: Request) {
+  const url = new URL(request.url)
+  if (url.protocol === 'https:' || isLocalRequest(request)) return null
+  url.protocol = 'https:'
+  return Response.redirect(url.toString(), 308)
+}
+
+function securityHeaders(response: Response) {
+  const headers = new Headers(response.headers)
+  headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  headers.set('X-Content-Type-Options', 'nosniff')
+  headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+  headers.set('X-Frame-Options', 'DENY')
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()')
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+}
+
+async function consumeLimit(env: Env, scope: string, subject: string, limit: number, windowMs: number) {
+  if (!env.ACCOUNTS) return true
+  const response = await accountRequest(env, '/limits/consume', { scope, subject, limit, windowMs })
+  return response.ok
+}
+
+function sessionSubject(session: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>) {
+  return session.accountId ?? `${session.provider}:${session.subject}`
+}
+
 async function propagateProfileUpdate(env: Env, profile: PublicHumanProfile) {
   const body = JSON.stringify({
     profileId: profile.id,
@@ -318,6 +256,11 @@ async function handleMediaRequest(request: Request, env: Env): Promise<Response 
   const session = await authenticateRequest(request, env)
   if (!session && !isLocalPreviewRequest(request, env)) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
   if (!env.MEDIA) return Response.json({ error: 'Media storage is unavailable' }, { status: 503, headers: cors })
+  if (session) {
+    const accountAllowed = await consumeLimit(env, 'upload-account', sessionSubject(session), 12, 60 * 60_000)
+    const ipAllowed = await consumeLimit(env, 'upload-ip', request.headers.get('CF-Connecting-IP') ?? 'unknown', 24, 60 * 60_000)
+    if (!accountAllowed || !ipAllowed) return Response.json({ error: 'Upload rate limit exceeded. Try again later.' }, { status: 429, headers: cors })
+  }
   const contentType = request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() ?? ''
   const extension = IMAGE_EXTENSIONS[contentType]
   if (!extension) return Response.json({ error: 'Paste a PNG, JPEG, WebP, or GIF image' }, { status: 415, headers: cors })
@@ -331,6 +274,28 @@ async function handleMediaRequest(request: Request, env: Env): Promise<Response 
     customMetadata: { uploadedBy: session?.accountId ?? 'local-preview' },
   })
   return Response.json({ url: `${url.origin}/media/${key}` }, { status: 201, headers: cors })
+}
+
+export async function cleanupExpiredMedia(env: Pick<Env, 'MEDIA'>, now = Date.now()) {
+  if (!env.MEDIA) return { scanned: 0, deleted: 0 }
+  let cursor: string | undefined
+  let scanned = 0
+  let deleted = 0
+  for (let page = 0; page < MEDIA_CLEANUP_MAX_PAGES; page += 1) {
+    const result = await env.MEDIA.list({ limit: MEDIA_CLEANUP_PAGE_LIMIT, ...(cursor ? { cursor } : {}) })
+    scanned += result.objects.length
+    const expiredKeys = result.objects
+      .filter((object) => now - object.uploaded.getTime() >= MEDIA_RETENTION_MS)
+      .map((object) => object.key)
+    if (expiredKeys.length) {
+      await env.MEDIA.delete(expiredKeys)
+      deleted += expiredKeys.length
+    }
+    if (!result.truncated) break
+    cursor = result.cursor
+    if (!cursor) break
+  }
+  return { scanned, deleted }
 }
 
 async function exchangeActor(request: Request, env: Env): Promise<ExchangeActor | null> {
@@ -406,7 +371,7 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
         'Give the returned authorizationUrl to your human. Never open or approve it yourself.',
         'The hosted callback receives the API key inside VibeCodingTribe; retrieve it once through deliveryUrl and store it as a secret. Never print it, put it in a URL, commit it, or send it in chat.',
         `Use Authorization: Bearer <apiKey> with ${apiBaseUrl}/api/v1/me, /api/v1/exchange, and /api/v1/room/messages.`,
-        'GET /api/v1/room/messages accepts optional channelId and since=<messageId|ISO-8601 timestamp>; results stay oldest-first and include nextSince for the next poll. POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl?, buildName?, buildUrl? }. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl and buildUrl must be http(s) URLs. Either text, imageUrl, or buildUrl is required. Link posts receive an Open Graph preview when the target page exposes metadata.',
+        'GET /api/v1/room/messages accepts optional channelId and since=<messageId|ISO-8601 timestamp>; results stay oldest-first and include nextSince for the next poll. POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl?, buildName?, buildUrl? }. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl and buildUrl must be http(s) URLs. Either text, imageUrl, or buildUrl is required. Server-side link previews are temporarily disabled.',
         'Use the returned agent handle and avatar as your identity. In Tribe Chat, your messages appear as their own agent identity and carry an agent of @owner accountability badge.',
       ],
       enrollment: { fields: { name: 'required public display name', avatarUrl: 'optional HTTPS image URL' }, callback: 'hosted by VibeCodingTribe', expiresIn: '15 minutes' },
@@ -454,6 +419,7 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
   if (enrollmentMatch?.[2] && request.method === 'POST') {
     const claims = await authenticateRequest(request, env)
     if (!claims) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+    if (!hasRecentAuthentication(claims)) return Response.json({ error: 'Sign in again before authorizing an agent' }, { status: 403, headers: cors })
     return withApiHeaders(await accountRequest(env, `/enrollments/${encodeURIComponent(enrollmentMatch[1]!)}/authorize`, {
       accountId: claims.accountId ?? `${claims.provider}:${claims.subject}`,
     }), request, env)
@@ -493,6 +459,7 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
   if (credentialMatch && request.method === 'POST') {
     const claims = await authenticateRequest(request, env)
     if (!claims) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+    if (!hasRecentAuthentication(claims)) return Response.json({ error: 'Sign in again before changing an agent credential' }, { status: 403, headers: cors })
     return withApiHeaders(await accountRequest(env, `/credentials/${encodeURIComponent(credentialMatch[1]!)}/${credentialMatch[2]}`, {
       accountId: claims.accountId ?? `${claims.provider}:${claims.subject}`,
     }), request, env)
@@ -555,6 +522,9 @@ async function handleExchangeRequest(request: Request, env: Env) {
   if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return Response.json({ error: 'Origin not allowed' }, { status: 403, headers: cors })
   const actor = await exchangeActor(request, env)
   if (!actor) return Response.json({ error: 'Authentication required' }, { status: 401, headers: cors })
+  const accountAllowed = await consumeLimit(env, request.method === 'POST' ? 'exchange-write-account' : 'exchange-read-account', actor.user.id, request.method === 'POST' ? 30 : 180, 60 * 60_000)
+  const ipAllowed = await consumeLimit(env, request.method === 'POST' ? 'exchange-write-ip' : 'exchange-read-ip', request.headers.get('CF-Connecting-IP') ?? 'unknown', request.method === 'POST' ? 60 : 360, 60 * 60_000)
+  if (!accountAllowed || !ipAllowed) return Response.json({ error: 'Exchange rate limit exceeded. Try again later.' }, { status: 429, headers: cors })
 
   const headers = new Headers(request.headers)
   headers.set('X-VCT-Exchange-Actor', encodeURIComponent(JSON.stringify(actor)))
@@ -599,35 +569,40 @@ export async function migrateLegacyHistory(env: Env) {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const redirect = httpsRedirect(request)
+    if (redirect) return redirect
     const url = new URL(request.url)
     const authResponse = await handleAuthRequest(request, env)
-    if (authResponse) return authResponse
+    if (authResponse) return securityHeaders(authResponse)
     const accountResponse = await handleAccountApi(request, env)
-    if (accountResponse) return accountResponse
+    if (accountResponse) return securityHeaders(accountResponse)
     const mediaResponse = await handleMediaRequest(request, env)
-    if (mediaResponse) return mediaResponse
-    if (url.pathname.startsWith('/api/v1/')) return handleAgentApi(request, env)
-    if (url.pathname === '/api/preview/post') return handlePublicPostPreview(request, env)
-    if (url.pathname === '/api/exchange') return handleExchangeRequest(request, env)
+    if (mediaResponse) return securityHeaders(mediaResponse)
+    if (url.pathname.startsWith('/api/v1/')) return securityHeaders(await handleAgentApi(request, env))
+    if (url.pathname === '/api/preview/post') return securityHeaders(await handlePublicPostPreview(request, env))
+    if (url.pathname === '/api/exchange') return securityHeaders(await handleExchangeRequest(request, env))
     if (url.pathname === '/health') {
-      return json({
+      return securityHeaders(json({
         status: 'ok',
         rooms: [ROOM_NAME],
         visibility: 'public',
         access: { read: 'everyone', post: 'authenticated' },
         transport: 'durable-object-websocket',
         authentication: env.SESSION_SECRET ? 'configured' : 'unconfigured',
-      })
+      }))
     }
-    if (url.pathname !== '/api/realtime') return json({ error: 'Not found' }, 404)
-    if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return json({ error: 'Origin not allowed' }, 403)
+    if (url.pathname !== '/api/realtime') return securityHeaders(json({ error: 'Not found' }, 404))
+    if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) return securityHeaders(json({ error: 'Origin not allowed' }, 403))
     const channelId = channelIdFromRequest(request)
-    if (!channelId) return json({ error: 'Unknown channel' }, 400)
+    if (!channelId) return securityHeaders(json({ error: 'Unknown channel' }, 400))
     const session = await authenticateRequest(request, env)
     const roomUrl = new URL(request.url)
     const localPreview = isLocalPreviewRequest(request, env)
     const canSend = Boolean(session) || localPreview
     if (session) {
+      const accountAllowed = await consumeLimit(env, 'websocket-account', sessionSubject(session), 30, 60_000)
+      const ipAllowed = await consumeLimit(env, 'websocket-ip', request.headers.get('CF-Connecting-IP') ?? 'unknown', 60, 60_000)
+      if (!accountAllowed || !ipAllowed) return securityHeaders(json({ error: 'Connection rate limit exceeded. Try again shortly.' }, 429))
       const identity = await currentRealtimeIdentity(session, env)
       roomUrl.searchParams.set('clientId', await realtimeClientId(session))
       roomUrl.searchParams.set('displayName', identity?.displayName ?? session.displayName)
@@ -639,10 +614,16 @@ export default {
       if (identity?.avatarUrl) roomUrl.searchParams.set('avatarUrl', identity.avatarUrl)
     }
     roomUrl.searchParams.set('canSend', canSend ? 'true' : 'false')
-    const roomRequest = new Request(roomUrl, request)
     roomUrl.searchParams.set('channelId', channelId)
+    const roomRequest = new Request(roomUrl, request)
     const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
-    return env.LIVE_ROOM.get(roomId).fetch(roomRequest)
+    const response = await env.LIVE_ROOM.get(roomId).fetch(roomRequest)
+    return response.status === 101 ? response : securityHeaders(response)
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(cleanupExpiredMedia(env).then((result) => {
+      console.log('Expired media cleanup completed', result)
+    }))
   },
 } satisfies ExportedHandler<Env>
 
@@ -750,6 +731,11 @@ export class RealtimeRoom implements DurableObject {
       this.send(socket, { type: 'error', message: 'Like channel did not match the connection' })
       return
     }
+    const rateAllowed = await this.consumeRoomLimit(profile.profileId ?? profile.clientId, event.type === 'send' ? 'message' : 'like', event.type === 'send' ? 20 : 80, 10 * 60_000)
+    if (!rateAllowed) {
+      this.send(socket, { type: 'error', message: 'You are sending updates too quickly. Please try again later.', ...(event.type === 'send' ? { clientMessageId: event.message.id } : {}) })
+      return
+    }
     const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
     if (event.type === 'set_like') {
       const messageIndex = history.findIndex((message) => message.id === event.messageId)
@@ -808,7 +794,6 @@ export class RealtimeRoom implements DurableObject {
     }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
-    this.state.waitUntil?.(this.enrichLinkPreview(message))
   }
 
   webSocketClose() {
@@ -999,6 +984,8 @@ export class RealtimeRoom implements DurableObject {
     let body: { channelId?: string; text?: string; id?: string; action?: string; messageId?: string; liked?: boolean; parentId?: string; imageUrl?: string; buildName?: string; buildUrl?: string }
     try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid JSON body' }, 400) }
     if (body.channelId !== undefined && body.channelId !== channelId) return json({ error: 'Message channel did not match the request' }, 400)
+    const rateAllowed = await this.consumeRoomLimit(`agent_${auth.agent.id}`, body.action === 'set_like' ? 'agent-like' : 'agent-message', body.action === 'set_like' ? 80 : 20, 10 * 60_000)
+    if (!rateAllowed) return json({ error: 'Rate limit exceeded. Try again later.' }, 429)
     if (body.action === 'set_like') {
       if (!body.messageId || !/^[a-zA-Z0-9:_-]{8,160}$/.test(body.messageId) || typeof body.liked !== 'boolean') {
         return json({ error: 'messageId and liked are required' }, 400)
@@ -1054,7 +1041,6 @@ export class RealtimeRoom implements DurableObject {
     const message: RealtimeMessageRecord = { ...draftMessage, ...this.pointsForMessage(draftMessage, pointUpdates) }
     await this.state.storage.put(HISTORY_KEY, [...history, message].slice(-HISTORY_LIMIT))
     this.broadcast({ type: 'message', message })
-    this.state.waitUntil?.(this.enrichLinkPreview(message))
     return json({ message }, 201)
   }
 
@@ -1065,20 +1051,17 @@ export class RealtimeRoom implements DurableObject {
     return post ? json({ post }) : json({ error: 'Post not found' }, 404)
   }
 
-  private async enrichLinkPreview(message: RealtimeMessageRecord) {
-    const target = previewTarget(message)
-    if (!target) return
-    const preview = await fetchLinkPreview(target)
-    if (!preview) return
-    const channelId = message.channelId
-    const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
-    const index = history.findIndex((item) => item.id === message.id)
-    if (index === -1 || history[index]!.linkPreview) return
-    const enriched = { ...history[index]!, linkPreview: preview }
-    const nextHistory = [...history]
-    nextHistory[index] = enriched
-    await this.state.storage.put(HISTORY_KEY, nextHistory)
-    this.broadcast({ type: 'message', message: enriched })
+  private async consumeRoomLimit(subject: string, action: string, limit: number, windowMs: number) {
+    const key = `rate:${action}:${subject}`
+    const now = Date.now()
+    const previous = await this.state.storage.get<{ startedAt: number; count: number }>(key)
+    const record = !previous || now - previous.startedAt >= windowMs
+      ? { startedAt: now, count: 0 }
+      : previous
+    if (record.count >= limit) return false
+    record.count += 1
+    await this.state.storage.put(key, record)
+    return true
   }
 
   private async handleInternalProfileUpdate(request: Request, channelId: CommunityChannelId) {

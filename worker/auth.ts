@@ -23,6 +23,8 @@ export interface SessionClaims {
   avatarUrl?: string
   email?: string
   issuedAt: number
+  /** The original interactive OAuth completion time. This never rolls forward. */
+  authenticatedAt?: number
   expiresAt: number
 }
 
@@ -36,7 +38,10 @@ interface OAuthAttempt {
 }
 
 const OAUTH_COOKIE = '__Host-vct_oauth'
-const SESSION_LIFETIME_SECONDS = 60 * 60 * 24 * 30
+// Browser-held bearer tokens are an interim design. Keep their window short and
+// bounded until they are replaced with revocable, server-side sessions.
+const SESSION_LIFETIME_SECONDS = 60 * 60 * 8
+const RECENT_AUTHENTICATION_SECONDS = 10 * 60
 const encoder = new TextEncoder()
 
 function base64UrlEncode(value: Uint8Array | string) {
@@ -371,6 +376,7 @@ async function finishOAuth(request: Request, env: AuthEnv, provider: AuthProvide
       ...(account?.avatarUrl || identity.avatarUrl ? { avatarUrl: account?.avatarUrl ?? identity.avatarUrl } : {}),
       ...(account?.email || identity.email ? { email: account?.email ?? identity.email } : {}),
       issuedAt: now,
+      authenticatedAt: now,
       expiresAt: now + SESSION_LIFETIME_SECONDS,
     }
     const sessionToken = await signValue(claims, env.SESSION_SECRET)
@@ -416,6 +422,10 @@ export async function authenticateRequest(request: Request, env: AuthEnv): Promi
   if (!claims || ![1, 2].includes(claims.version) || claims.expiresAt <= Math.floor(Date.now() / 1000)) return null
   if (!['github', 'linkedin'].includes(claims.provider) || !claims.subject || !claims.displayName) return null
   return claims
+}
+
+export function hasRecentAuthentication(claims: SessionClaims, now = Math.floor(Date.now() / 1000)) {
+  return now - (claims.authenticatedAt ?? claims.issuedAt) <= RECENT_AUTHENTICATION_SECONDS
 }
 
 export async function realtimeClientId(claims: SessionClaims) {
@@ -484,6 +494,7 @@ export async function handleAuthRequest(request: Request, env: AuthEnv): Promise
   if (linkMatch && request.method === 'GET') {
     const claims = await authenticateRequest(request, env)
     if (!claims) return authJson(request, env, { error: 'Authentication required' }, 401)
+    if (!hasRecentAuthentication(claims)) return authJson(request, env, { error: 'Sign in again before linking another identity' }, 403)
     return startOAuth(request, env, linkMatch[1] as AuthProvider, claims.accountId ?? `${claims.provider}:${claims.subject}`)
   }
   if (url.pathname === '/auth/session' && request.method === 'GET') {
@@ -505,16 +516,9 @@ export async function handleAuthRequest(request: Request, env: AuthEnv): Promise
         claims = { ...claims, version: 2, accountId: account.id }
       }
     }
-    const now = Math.floor(Date.now() / 1000)
-    const refreshedClaims: SessionClaims = {
-      ...claims,
-      issuedAt: now,
-      expiresAt: now + SESSION_LIFETIME_SECONDS,
-    }
     const session: AuthSession = {
       user: await publicUser(claims, env),
-      expiresAt: new Date(refreshedClaims.expiresAt * 1000).toISOString(),
-      sessionToken: await signValue(refreshedClaims, env.SESSION_SECRET!),
+      expiresAt: new Date(claims.expiresAt * 1000).toISOString(),
     }
     return authJson(request, env, session)
   }

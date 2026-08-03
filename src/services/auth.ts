@@ -106,7 +106,6 @@ export async function loadAuthSession(token = getSessionToken()): Promise<AuthSe
     })
     if (!response.ok) return null
     const session = await response.json() as AuthSession
-    if (session.sessionToken) window.localStorage.setItem(SESSION_TOKEN_KEY, session.sessionToken)
     return session
   } catch {
     return null

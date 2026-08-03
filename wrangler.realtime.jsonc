@@ -7,6 +7,9 @@
   "observability": {
     "enabled": true
   },
+  "triggers": {
+    "crons": ["17 4 * * *"]
+  },
   "vars": {
     "ALLOWED_ORIGINS": "http://localhost:4173,http://127.0.0.1:4173,https://vibecodingtribe.com,https://vibecodingtribe.pages.dev",
     "AUTH_APP_ORIGIN": "https://vibecodingtribe.com"

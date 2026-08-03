@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { handleAuthRequest, linkedinProfileUrlFromClaims, type AuthEnv } from './auth'
+import { handleAuthRequest, hasRecentAuthentication, linkedinProfileUrlFromClaims, type AuthEnv, type SessionClaims } from './auth'
 
 const env: AuthEnv = {
   ALLOWED_ORIGINS: 'http://localhost:4173,https://vibecodingtribe.com',
@@ -54,5 +54,21 @@ describe('OAuth routes', () => {
     )
 
     expect(response?.status).toBe(503)
+  })
+
+  it('requires a genuinely recent interactive sign-in for sensitive actions', () => {
+    const claims: SessionClaims = {
+      version: 2,
+      accountId: 'human_123',
+      provider: 'github',
+      subject: '123',
+      displayName: 'AJ',
+      handle: 'aj',
+      issuedAt: 1_000,
+      authenticatedAt: 1_000,
+      expiresAt: 100_000,
+    }
+    expect(hasRecentAuthentication(claims, 1_599)).toBe(true)
+    expect(hasRecentAuthentication(claims, 1_601)).toBe(false)
   })
 })
