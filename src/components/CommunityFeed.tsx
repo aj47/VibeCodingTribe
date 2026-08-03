@@ -274,6 +274,13 @@ export function CommunityFeed({
   const [reply, setReply] = useState('')
   const [commentKind, setCommentKind] = useState<'reply' | 'feedback'>('feedback')
   const [accountOpen, setAccountOpen] = useState(false)
+  const onlineParticipants = useMemo(() => participants
+    .filter((participant) => participant.online)
+    .sort((first, second) => {
+      if (first.clientId === profile.clientId) return -1
+      if (second.clientId === profile.clientId) return 1
+      return first.displayName.localeCompare(second.displayName)
+    }), [participants, profile.clientId])
   const [pastedImage, setPastedImage] = useState<PastedImage | null>(null)
   const [replyImage, setReplyImage] = useState<PastedImage | null>(null)
   const [imageError, setImageError] = useState<string | null>(null)
@@ -313,19 +320,22 @@ export function CommunityFeed({
     }
     return grouped
   }, [messages])
+  const focusedPostAvailable = Boolean(threadId && topLevel.some((message) => message.id === threadId))
   useEffect(() => {
-    if (threadId && replies.has(threadId)) setReplyingTo(threadId)
-  }, [replies, threadId])
+    if (threadId && canPost && focusedPostAvailable) setReplyingTo(threadId)
+  }, [canPost, focusedPostAvailable, threadId])
   useEffect(() => {
-    if (!threadId || replyingTo !== threadId) return
+    if (!threadId || !focusedPostAvailable) return
     const frame = requestAnimationFrame(() => {
       const thread = threadRefs.current.get(threadId)
       if (!thread) return
-      thread.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      thread.querySelector<HTMLTextAreaElement>('.community-reply-form textarea')?.focus()
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+      thread.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
+      if (replyingTo === threadId) thread.querySelector<HTMLTextAreaElement>('.community-reply-form textarea')?.focus()
+      else thread.focus({ preventScroll: true })
     })
     return () => cancelAnimationFrame(frame)
-  }, [replyingTo, threadId])
+  }, [focusedPostAvailable, replyingTo, threadId])
   const activeThreads = useMemo(() => findActiveThreads(messages, channelId), [channelId, messages])
   const initialMessagesLoaded = messagesLoaded ?? connectionStatus !== 'syncing'
   const messagesLoading = !initialMessagesLoaded && messages.length === 0 && connectionStatus !== 'offline'
@@ -414,7 +424,10 @@ export function CommunityFeed({
   }
 
   async function sharePost(message: RealtimeMessageRecord) {
-    const url = `${window.location.origin}/?post=${encodeURIComponent(message.id)}`
+    const shareUrl = new URL('/', window.location.origin)
+    shareUrl.searchParams.set('post', message.id)
+    shareUrl.searchParams.set('channel', message.channelId)
+    const url = shareUrl.toString()
     if (navigator.share) await navigator.share({ title: message.buildName || 'VibeCodingTribe update', text: message.text, url }).catch(() => undefined)
     else await navigator.clipboard?.writeText(url)
   }
@@ -457,8 +470,22 @@ export function CommunityFeed({
 
     <main className="community-layout">
       <aside className="community-rail community-rail--left">
-        <div className="community-rail__intro"><span>THE WORKSHOP IS OPEN</span><h2>Build in public.<br />Get unstuck together.</h2><p>Small updates count. Share the rough edge, not just the launch.</p></div>
         <ChannelSidebar selectedChannelId={channelId} activity={channelActivity} messages={messages} readState={readState} onSelectChannel={onOpenChannel} onOpenThread={openThread} onReadThread={onReadThread} />
+        <section className="community-online" aria-label="Online members">
+          <header><span><i aria-hidden="true" /> ONLINE</span><small>{onlineParticipants.length}</small></header>
+          {onlineParticipants.length > 0 ? <div className="community-online__list">
+            {onlineParticipants.map((participant) => <button
+              type="button"
+              key={participant.clientId}
+              disabled={!participant.profileId}
+              title={participant.profileId ? `View ${participant.displayName}'s profile` : undefined}
+              onClick={() => participant.profileId && onOpenProfile(participant.profileId)}
+            >
+              <span className="community-online__avatar"><Avatar item={participant} /><i aria-hidden="true" /></span>
+              <span><strong>{participant.displayName}{participant.clientId === profile.clientId && <em>you</em>}</strong><small>@{participant.handle}{participant.actorType === 'agent' ? ' · agent' : ''}</small></span>
+            </button>)}
+          </div> : <p>Nobody is online yet.</p>}
+        </section>
       </aside>
 
       <section className="community-feed" aria-label={missionsOnly ? 'Posts needing feedback' : 'Community feed'}>
@@ -509,7 +536,7 @@ export function CommunityFeed({
               key={message.id}
               tabIndex={threadId === message.id ? -1 : undefined}
             >
-              <div className="community-post__typebar"><span><PostIcon size={13} /> {meta.label}</span><small>{meta.context}</small></div>
+              {kind !== 'chat' && <div className="community-post__typebar"><span><PostIcon size={13} /> {meta.label}</span><small>{meta.context}</small></div>}
               <header>
                 <button type="button" onClick={() => message.profileId && onOpenProfile(message.profileId)}><Avatar item={message} /></button>
                 <div><button type="button" className="community-author" onClick={() => message.profileId && onOpenProfile(message.profileId)}>{message.displayName}</button><span>@{message.handle} · {relativeTime(message.sentAt)}</span></div>

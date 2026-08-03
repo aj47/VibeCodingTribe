@@ -38,17 +38,17 @@ export function AgentAuthorizationPage({ enrollmentId, session, onBack, onSignIn
   return <main className="agent-auth-page">
     <nav><button type="button" onClick={onBack}><ArrowLeft size={14} /> Cancel</button><span>Agent authorization</span></nav>
     <section className="agent-auth-card">
-      {approved ? <div className="agent-auth-success"><CheckCircle2 size={34} /><span>ACCESS DELIVERED</span><h1>{enrollment?.name} is connected.</h1><p>The API key was sent directly to the registered callback. It will not be shown here. You can rotate or revoke it from Invite your agent.</p><button type="button" onClick={onBack}>Done</button></div> : <>
+      {approved ? <div className="agent-auth-success"><CheckCircle2 size={34} /><span>ACCESS APPROVED</span><h1>{enrollment?.name} is ready to connect.</h1><p>The agent can now claim its API key once using its private pickup token. The key will not be shown here.</p><button type="button" onClick={onBack}>Done</button></div> : <>
         <header><div className="agent-auth-avatar" style={{ background: enrollment?.avatarUrl ? '#edf5fb' : '#c8ddf0' }}>{enrollment?.avatarUrl ? <img src={enrollment.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <>{agentInitial}<Bot size={13} /></>}</div><span>AGENT REQUEST</span><h1>{enrollment?.name ?? 'Loading request…'}</h1><p>wants programmatic access to VibeCodingTribe.</p></header>
         {error && <div className="profile-error" role="alert">{error}</div>}
         {enrollment && <div className="agent-auth-details">
           <div><span><KeyRound size={15} /> PERMISSIONS</span><p>Read and participate in Tribe Chat, and use the testing exchange as your human account.</p></div>
-          <div><span><ShieldCheck size={15} /> KEY DELIVERY</span><p>Sent once to <code>{enrollment.callbackUrl}</code>. Stored only as a one-way hash.</p></div>
+          <div><span><ShieldCheck size={15} /> KEY DELIVERY</span><p>{enrollment.callbackUrl ? <>Sent once to <code>{enrollment.callbackUrl}</code>.</> : 'Claimed once by the requesting agent after approval.'} Stored only as a one-way hash.</p></div>
           <div><span>HUMAN OWNER</span><p>{session ? <><strong>{session.user.displayName}</strong> · @{session.user.handle}</> : 'Sign in to establish the accountable owner.'}</p></div>
         </div>}
         <footer>
-          <p>Only approve an agent and callback you recognize. This agent will act under your identity, and its activity can be traced back to your profile.</p>
-          {session ? <button type="button" disabled={!enrollment || pending || enrollment.status !== 'pending'} onClick={() => void approve()}><ShieldCheck size={15} /> {pending ? 'Delivering key…' : `Authorize ${enrollment?.name ?? 'agent'}`}</button> : <button type="button" onClick={onSignIn}><LogIn size={15} /> Sign in to authorize</button>}
+          <p>Only approve an agent request you recognize. This agent will act under your identity, and its activity can be traced back to your profile.</p>
+          {session ? <button type="button" disabled={!enrollment || pending || enrollment.status !== 'pending'} onClick={() => void approve()}><ShieldCheck size={15} /> {pending ? 'Authorizing…' : `Authorize ${enrollment?.name ?? 'agent'}`}</button> : <button type="button" onClick={onSignIn}><LogIn size={15} /> Sign in to authorize</button>}
         </footer>
       </>}
     </section>

@@ -3,6 +3,25 @@ import worker, { runDailyActivityDigest } from './index'
 import type { TransactionalEmail } from './email'
 
 describe('public room access', () => {
+  it('requires agents to reuse and durably persist one-time credentials', async () => {
+    const env = {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+    }
+
+    const response = await worker.fetch(new Request('https://worker.example/api/agent-bootstrap'), env as never)
+    const result = await response.json() as {
+      steps: string[]
+      credentialPersistence: { required: boolean; reuseBeforeEnrollment: boolean; verifyAfterReload: boolean; forbiddenStores: string[] }
+    }
+
+    expect(response.status).toBe(200)
+    expect(result.steps.join(' ')).toContain('do not create a duplicate enrollment')
+    expect(result.steps.join(' ')).toContain('Reload the apiKey from durable storage')
+    expect(result.credentialPersistence).toMatchObject({ required: true, reuseBeforeEnrollment: true, verifyAfterReload: true })
+    expect(result.credentialPersistence.forbiddenStores).toContain('repository files')
+  })
+
   it('forwards anonymous viewers to the room as read-only connections', async () => {
     const roomFetch = vi.fn((request: Request) => Response.json({ url: request.url }))
     const env = {

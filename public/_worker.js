@@ -89,7 +89,9 @@ function injectPostMetadata(html, requestUrl, post, imageUrl) {
   const title = truncate(post.text || post.buildName || `${post.displayName || 'Builder'} shared a post`, 180)
   const description = truncate(post.text || `${post.displayName || 'A builder'} shared a ${postLabel(post).toLowerCase()} in the VibeCodingTribe workshop.`, 320)
   const canonical = new URL(requestUrl)
-  canonical.search = `?post=${encodeURIComponent(post.id)}`
+  canonical.search = ''
+  canonical.searchParams.set('post', post.id)
+  if (['general', 'showcases', 'feedback'].includes(post.channelId)) canonical.searchParams.set('channel', post.channelId)
   const values = {
     description,
     'og:type': 'article',

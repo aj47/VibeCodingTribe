@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installExchangeApiMock } from './test/exchange-api'
 import { App } from './App'
 
@@ -21,6 +21,26 @@ describe('App community loop', () => {
     expect(screen.getByRole('button', { name: 'LinkedIn' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Local preview' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start local preview' })).toBeInTheDocument()
+  })
+
+  it('opens a shared post in its encoded room', () => {
+    window.history.replaceState({}, '', '/?post=feedback_12345678&channel=feedback')
+    render(<App />)
+
+    expect(screen.getByRole('heading', { name: 'Builders who need your eyes' })).toBeInTheDocument()
+  })
+
+  it('resolves legacy shared links that do not encode a room', async () => {
+    window.history.replaceState({}, '', '/?post=feedback_12345678')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/api/preview/post') return Response.json({ post: { id: 'feedback_12345678', channelId: 'feedback' } })
+      return Response.json({ state: {} })
+    }))
+    render(<App />)
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Builders who need your eyes' })).toBeInTheDocument())
+    expect(new URLSearchParams(window.location.search).get('channel')).toBe('feedback')
   })
 
   it('redirects the former chat route into the same main feed', async () => {

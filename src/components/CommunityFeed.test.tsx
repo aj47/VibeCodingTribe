@@ -37,7 +37,11 @@ describe('CommunityFeed post hierarchy', () => {
       canPost
       authChecking={false}
       messages={messages}
-      participants={[{ ...profile, online: true }]}
+      participants={[
+        { ...profile, online: true },
+        { ...profile, clientId: 'agent_12345678', displayName: 'Release Scout', handle: 'release-scout', profileId: 'agent_scout', actorType: 'agent', online: true },
+        { ...profile, clientId: 'offline_12345678', displayName: 'Offline Builder', handle: 'offline', online: false },
+      ]}
       onlineCount={1}
       connectionStatus="connected"
       missionsOnly={false}
@@ -61,9 +65,20 @@ describe('CommunityFeed post hierarchy', () => {
     />)
 
     expect(screen.queryByRole('group', { name: 'Choose post type' })).not.toBeInTheDocument()
+    expect(screen.queryByText('THE WORKSHOP IS OPEN')).not.toBeInTheDocument()
+    const onlineMembers = screen.getByRole('region', { name: 'Online members' })
+    expect(within(onlineMembers).getByText('Ada Builder')).toBeInTheDocument()
+    expect(within(onlineMembers).getByText('Release Scout')).toBeInTheDocument()
+    expect(within(onlineMembers).queryByText('Offline Builder')).not.toBeInTheDocument()
+    fireEvent.click(within(onlineMembers).getByRole('button', { name: /Release Scout/ }))
+    expect(noop).toHaveBeenCalledWith('agent_scout')
     expect(container.querySelectorAll('.community-post--chat')).toHaveLength(1)
     expect(container.querySelectorAll('.community-post--showcase')).toHaveLength(1)
     expect(container.querySelectorAll('.community-post--feedback')).toHaveLength(1)
+    const chatPost = container.querySelector('.community-post--chat')
+    expect(chatPost).not.toBeNull()
+    expect(within(chatPost as HTMLElement).queryByText('Community conversation')).not.toBeInTheDocument()
+    expect(container.querySelectorAll('.community-post__typebar')).toHaveLength(2)
     const feedbackPost = screen.getByText('Does this value proposition make sense?', { selector: 'article > p' }).closest('article')
     expect(feedbackPost).not.toBeNull()
     expect(within(feedbackPost as HTMLElement).getByText('Feedback request')).toBeInTheDocument()
@@ -116,6 +131,44 @@ describe('CommunityFeed post hierarchy', () => {
     expect(preview).toHaveAttribute('href', 'https://nativdocs.co/example')
     expect(preview.querySelector('img')).toHaveAttribute('src', 'https://nativdocs.co/og.png')
     expect(within(preview).getByText('Share HTML and Markdown files with comments.')).toBeInTheDocument()
+  })
+
+  it('copies a shared-post URL with the source room', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'share', { configurable: true, value: undefined })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[{ ...messages[2], channelId: 'feedback' }]}
+      participants={[]}
+      onlineCount={0}
+      connectionStatus="connected"
+      missionsOnly
+      channelId="feedback"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Share request' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce())
+    expect(writeText).toHaveBeenCalledWith('http://localhost:3000/?post=feedback_12345678&channel=feedback')
   })
 
   it('renders safe inline previews for supported video links and keeps the original URLs', () => {

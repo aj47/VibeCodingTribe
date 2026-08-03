@@ -61,6 +61,7 @@ export interface AgentCredentialSummary {
   name: string
   handle: string
   avatarUrl?: string
+  canRotate?: boolean
   keyPrefix: string
   createdAt: string
   lastUsedAt?: string
@@ -70,7 +71,7 @@ export interface AgentCredentialSummary {
 export interface AgentEnrollment {
   id: string
   name: string
-  callbackUrl: string
+  callbackUrl?: string
   createdAt: string
   expiresAt: string
   status: 'pending' | 'authorized' | 'delivered' | 'failed'

@@ -73,6 +73,30 @@ describe('AccountStore', () => {
     expect((await store.fetch(request('/credentials/authenticate', { token: deliveredKey }))).status).toBe(401)
   })
 
+  it('onboards an agent without a callback and allows one-time credential pickup', async () => {
+    const store = createStore()
+    const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-pickup-owner', displayName: 'Owner', handle: 'owner',
+    } }))
+    const { account } = await identityResponse.json() as { account: { id: string } }
+    const enrollmentResponse = await store.fetch(request('/enrollments', { name: 'Easy Agent' }))
+    const created = await enrollmentResponse.json() as { enrollment: { id: string }; claimToken: string }
+
+    const pending = await store.fetch(request(`/enrollments/${created.enrollment.id}/claim`, { claimToken: created.claimToken }))
+    expect(pending.status).toBe(202)
+
+    const authorized = await store.fetch(request(`/enrollments/${created.enrollment.id}/authorize`, { accountId: account.id }))
+    expect(authorized.status).toBe(200)
+
+    const claimed = await store.fetch(request(`/enrollments/${created.enrollment.id}/claim`, { claimToken: created.claimToken }))
+    const result = await claimed.json() as { apiKey: string; agent: { name: string; handle: string } }
+    expect(claimed.status).toBe(200)
+    expect(result.apiKey).toMatch(/^vct_agent_/)
+    expect(result.agent).toMatchObject({ name: 'Easy Agent', handle: 'easy-agent' })
+    expect((await store.fetch(request('/credentials/authenticate', { token: result.apiKey }))).status).toBe(200)
+    expect((await store.fetch(request(`/enrollments/${created.enrollment.id}/claim`, { claimToken: created.claimToken }))).status).toBe(410)
+  })
+
   it('rejects unsafe callbacks and cross-account identity linking', async () => {
     const store = createStore()
     const unsafe = await store.fetch(request('/enrollments', { name: 'Local agent', callbackUrl: 'http://127.0.0.1:3000/callback' }))

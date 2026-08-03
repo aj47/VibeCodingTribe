@@ -11,6 +11,7 @@ import {
   type RealtimeProfile,
 } from './realtime/protocol'
 import {
+  authOrigin,
   authErrorFromLocation,
   beginOAuth,
   clearAuthSession,
@@ -26,7 +27,7 @@ import {
 } from './services/realtime'
 import { mergeRealtimeProfiles } from './realtime/participants'
 import type { CommunityPostInput } from './community/types'
-import { channelFromPath, channelPath, DEFAULT_CHANNEL_ID, type CommunityChannelId } from './community/channels'
+import { channelFromPath, channelPath, DEFAULT_CHANNEL_ID, isCommunityChannelId, type CommunityChannelId } from './community/channels'
 import type { ChannelActivityMap } from './community/channel-navigation'
 import { loadLocalChannelActivity, loadLocalReadState, markThreadRead as markLocalThreadRead, saveLocalChannelActivity, saveLocalReadState, type LocalReadState } from './services/read-state'
 import { uploadCommunityImage } from './services/media'
@@ -35,6 +36,17 @@ type Surface = 'home' | 'community' | 'invite-agent' | 'profile' | 'authorize-ag
 type ConnectionStatus = 'connected' | 'syncing' | 'offline'
 
 const LEGACY_STORAGE_KEYS = ['vct-workspace-v3', 'vct-realtime-profile-v1', 'vct-realtime-outbox-v1']
+const POST_ID_PATTERN = /^[a-zA-Z0-9:_-]{8,160}$/
+
+function postIdFromSearch(search: string) {
+  const value = new URLSearchParams(search).get('post')
+  return value && POST_ID_PATTERN.test(value) ? value : undefined
+}
+
+function channelIdFromSearch(search: string) {
+  const value = new URLSearchParams(search).get('channel')
+  return isCommunityChannelId(value) ? value : undefined
+}
 
 function loadSurface(): Surface {
   const path = window.location.pathname.replace(/\/+$/, '')
@@ -75,8 +87,29 @@ export function App() {
   const realtimeClientRef = useRef<RealtimeRoomClient | null>(null)
   const profileBackRef = useRef<Surface>('community')
   const canPost = Boolean(authSession) || localPreview
-  const channelId = channelFromPath(window.location.pathname)
-  const threadId = new URLSearchParams(window.location.search).get('thread') ?? undefined
+  const searchParams = new URLSearchParams(window.location.search)
+  const sharedPostId = postIdFromSearch(window.location.search)
+  const sharedChannelId = channelIdFromSearch(window.location.search)
+  const [resolvedSharedPost, setResolvedSharedPost] = useState<{ postId: string; channelId: CommunityChannelId } | null>(null)
+  const channelId = sharedChannelId ?? (resolvedSharedPost && resolvedSharedPost.postId === sharedPostId ? resolvedSharedPost.channelId : channelFromPath(window.location.pathname))
+  const threadId = searchParams.get('thread') ?? sharedPostId
+
+  useEffect(() => {
+    if (!sharedPostId || sharedChannelId) return
+    let active = true
+    const previewUrl = new URL('/api/preview/post', authOrigin())
+    previewUrl.searchParams.set('id', sharedPostId)
+    void fetch(previewUrl, { mode: 'cors' }).then(async (response) => {
+      const result = await response.json() as { post?: RealtimeMessageRecord }
+      if (!active || !response.ok || !result.post || !isCommunityChannelId(result.post.channelId)) return
+      setResolvedSharedPost({ postId: sharedPostId, channelId: result.post.channelId })
+      const canonical = new URL(window.location.href)
+      canonical.searchParams.set('channel', result.post.channelId)
+      window.history.replaceState({}, '', `${canonical.pathname}${canonical.search}${canonical.hash}`)
+      setRouteVersion((current) => current + 1)
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [sharedChannelId, sharedPostId])
 
   useEffect(() => {
     setReadState(loadLocalReadState(profile.clientId))
@@ -470,7 +503,7 @@ export function App() {
       threadId={threadId}
       onSignIn={(provider) => {
         setAuthPendingProvider(provider)
-        beginOAuth(provider, window.location.pathname)
+        beginOAuth(provider, `${window.location.pathname}${window.location.search}`)
       }}
       localPreviewAvailable={import.meta.env.DEV && !localPreview}
       onStartLocalPreview={() => {
