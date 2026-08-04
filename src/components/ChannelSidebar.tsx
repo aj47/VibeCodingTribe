@@ -33,6 +33,7 @@ function threadMatches(thread: ActiveThread, query: string) {
 
 function messagePreview(message: RealtimeMessageRecord | undefined) {
   if (!message) return 'No messages yet.'
+  if (message.deletedAt) return 'Message removed by its author'
   if (message.text.trim()) return message.text.trim()
   if (message.buildName?.trim()) return `Shared ${message.buildName.trim()}`
   if (message.imageUrl) return 'Shared an image'

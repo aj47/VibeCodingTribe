@@ -100,6 +100,7 @@ export class RealtimeRoomClient {
   private stopped = true
   private outbox: RealtimeSendEvent['message'][]
   private pendingLikes = new Map<string, boolean>()
+  private pendingMutations = new Map<string, Extract<RealtimeClientEvent, { type: 'edit_message' | 'delete_message' }>>()
 
   constructor(
     private readonly profile: RealtimeProfile,
@@ -138,6 +139,18 @@ export class RealtimeRoomClient {
     this.flushOutbox()
   }
 
+  editMessage(messageId: string, text: string) {
+    if (!this.canSend) return
+    this.pendingMutations.set(messageId, { type: 'edit_message', channelId: this.channelId, messageId, text })
+    this.flushOutbox()
+  }
+
+  deleteMessage(messageId: string) {
+    if (!this.canSend) return
+    this.pendingMutations.set(messageId, { type: 'delete_message', channelId: this.channelId, messageId })
+    this.flushOutbox()
+  }
+
   private openSocket() {
     if (this.stopped) return
     if (typeof WebSocket === 'undefined') {
@@ -166,6 +179,9 @@ export class RealtimeRoomClient {
           if (pendingLike === parsed.message.likedByClientIds?.includes(this.profile.clientId)) {
             this.pendingLikes.delete(parsed.message.id)
           }
+          const pendingMutation = this.pendingMutations.get(parsed.message.id)
+          if (pendingMutation?.type === 'delete_message' && parsed.message.deletedAt) this.pendingMutations.delete(parsed.message.id)
+          if (pendingMutation?.type === 'edit_message' && parsed.message.editedAt && parsed.message.text === pendingMutation.text.trim()) this.pendingMutations.delete(parsed.message.id)
           this.persistOutbox()
         }
         if (parsed.type === 'snapshot' && parsed.messages.some((message) => message.channelId !== this.channelId)) return
@@ -194,6 +210,7 @@ export class RealtimeRoomClient {
     for (const [messageId, liked] of this.pendingLikes) {
       this.socket.send(JSON.stringify({ type: 'set_like', channelId: this.channelId, messageId, liked } satisfies RealtimeClientEvent))
     }
+    for (const mutation of this.pendingMutations.values()) this.socket.send(JSON.stringify(mutation))
   }
 
   private loadOutbox() {

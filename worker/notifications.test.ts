@@ -50,6 +50,17 @@ describe('activity digest collection', () => {
     expect(events).toEqual([])
   })
 
+  it('does not email tombstoned activity or activity on a removed post', () => {
+    const events = collectActivityDigestEvents([
+      message({ id: 'live-showcase', profileId: recipient.accountId, clientId: recipient.realtimeClientId, intent: 'showcase' }),
+      message({ id: 'removed-reply', parentId: 'live-showcase', deletedAt: '2026-08-01T12:00:00.000Z', text: '', revisions: [{ revision: 1, createdAt: '2026-08-01T11:00:00.000Z', text: 'Removed' }] }),
+      message({ id: 'removed-showcase', profileId: recipient.accountId, clientId: recipient.realtimeClientId, intent: 'showcase', deletedAt: '2026-08-01T12:00:00.000Z', text: '' }),
+      message({ id: 'reply-on-removed', parentId: 'removed-showcase' }),
+    ], recipient, 'https://vibecodingtribe.com')
+
+    expect(events).toEqual([])
+  })
+
   it('uses a deterministic UTC day', () => {
     expect(digestDay(new Date('2026-08-01T23:59:59.000Z'))).toBe('2026-08-01')
     expect(digestDay(new Date('2026-08-02T00:00:00.000Z'))).toBe('2026-08-02')

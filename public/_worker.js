@@ -33,6 +33,26 @@ function truncate(value, length) {
   return normalized.length > length ? `${normalized.slice(0, length - 1).trimEnd()}…` : normalized
 }
 
+function attachedUrl(post) {
+  const candidates = [post.buildUrl, post.linkPreview?.url]
+  for (const value of candidates) {
+    if (typeof value !== 'string') continue
+    try {
+      const url = new URL(value)
+      if (url.protocol === 'http:' || url.protocol === 'https:') return url.href
+    } catch {
+      // Ignore malformed attachment URLs from older stored posts.
+    }
+  }
+  return null
+}
+
+function postDescription(post) {
+  const body = post.text || `${post.displayName || 'A builder'} shared a ${postLabel(post).toLowerCase()} in the VibeCodingTribe workshop.`
+  const url = attachedUrl(post)
+  return url ? `${truncate(body, 260)} Attached link: ${url}` : truncate(body, 320)
+}
+
 function wrapText(value, maxCharacters, maxLines) {
   const words = truncate(value, 260).split(' ').filter(Boolean)
   const lines = []
@@ -117,7 +137,8 @@ function secureResponse(response) {
 
 function injectPostMetadata(html, requestUrl, post, imageUrl) {
   const title = truncate(post.text || post.buildName || `${post.displayName || 'Builder'} shared a post`, 180)
-  const description = truncate(post.text || `${post.displayName || 'A builder'} shared a ${postLabel(post).toLowerCase()} in the VibeCodingTribe workshop.`, 320)
+  const description = postDescription(post)
+  const attachmentUrl = attachedUrl(post)
   const canonical = new URL(requestUrl)
   canonical.search = `?post=${encodeURIComponent(post.id)}`
   const values = {
@@ -137,6 +158,7 @@ function injectPostMetadata(html, requestUrl, post, imageUrl) {
     'twitter:description': description,
     'twitter:image': imageUrl,
     'twitter:image:alt': `${title} — VibeCodingTribe`,
+    ...(attachmentUrl ? { 'og:see_also': attachmentUrl } : {}),
   }
   const keys = Object.keys(values).map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const managedTags = new RegExp(`<meta\\b[^>]*(?:property|name)\\s*=\\s*["'](?:${keys})["'][^>]*>\\s*`, 'gi')

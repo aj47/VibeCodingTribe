@@ -47,8 +47,8 @@ export function findActiveThreads(messages: RealtimeMessageRecord[], channelId: 
     .map(([parentId, threadReplies]) => {
       const parent = parents.get(parentId)!
       const latestReply = [...threadReplies].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]!
-      const title = parent.buildName?.trim() || parent.text.trim().split(/\s+/).slice(0, 8).join(' ') || 'Untitled conversation'
-      const preview = parent.text.trim() || 'Image or build shared in this conversation.'
+      const title = parent.deletedAt ? 'Removed conversation' : parent.buildName?.trim() || parent.text.trim().split(/\s+/).slice(0, 8).join(' ') || 'Untitled conversation'
+      const preview = parent.deletedAt ? 'This post was removed; its public history remains available.' : parent.text.trim() || 'Image or build shared in this conversation.'
       return {
         channelId,
         parentId,

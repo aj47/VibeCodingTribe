@@ -1,4 +1,4 @@
-import type { RealtimeMessageRecord, RealtimeProfile, RealtimeServerEvent } from '../src/realtime/protocol'
+import type { RealtimeMessageRecord, RealtimeMessageRevision, RealtimeProfile, RealtimeServerEvent } from '../src/realtime/protocol'
 import {
   LIVE_ROOM_KEY,
   normalizeAvatarUrl,
@@ -117,6 +117,24 @@ function messagesAfterCursor(history: RealtimeMessageRecord[], rawCursor: string
   return { messages: history.filter((message) => Date.parse(message.sentAt) > timestamp) }
 }
 
+export function agentReadableMessage(message: RealtimeMessageRecord) {
+  const attachmentLines: string[] = []
+  const includedUrls = new Set<string>()
+  const includeUrl = (label: string, value: string | undefined) => {
+    if (!value || includedUrls.has(value) || message.text.includes(value)) return
+    includedUrls.add(value)
+    attachmentLines.push(`${label}: ${value}`)
+  }
+  includeUrl('Build URL', message.buildUrl)
+  includeUrl('Link URL', message.linkPreview?.url)
+  includeUrl('Image URL', message.imageUrl)
+  return {
+    ...message,
+    bodyText: message.text,
+    text: [message.text, ...attachmentLines].filter(Boolean).join('\n\n'),
+  }
+}
+
 function pointsOwnerProfileId(message: Pick<RealtimeMessageRecord, 'profileId' | 'actorType' | 'ownerProfileId'>) {
   return message.actorType === 'agent' ? message.ownerProfileId : message.profileId
 }
@@ -129,6 +147,48 @@ function pointRecipient(message: RealtimeMessageRecord) {
     ...(message.actorType === 'agent' && message.ownerHandle ? { handle: message.ownerHandle } : { handle: message.handle }),
     ...(message.displayName ? { displayName: message.displayName } : {}),
   }
+}
+
+function messageRevision(message: RealtimeMessageRecord): RealtimeMessageRevision {
+  return {
+    revision: (message.revisions?.length ?? 0) + 1,
+    createdAt: message.editedAt ?? message.sentAt,
+    text: message.text,
+    ...(message.buildName ? { buildName: message.buildName } : {}),
+    ...(message.buildUrl ? { buildUrl: message.buildUrl } : {}),
+    ...(message.imageUrl ? { imageUrl: message.imageUrl } : {}),
+    ...(message.linkPreview ? { linkPreview: message.linkPreview } : {}),
+  }
+}
+
+function ownsRealtimeMessage(message: RealtimeMessageRecord, profile: Pick<RealtimeProfile, 'clientId' | 'profileId'>) {
+  return Boolean((profile.profileId && message.profileId === profile.profileId) || message.clientId === profile.clientId)
+}
+
+function editedMessage(message: RealtimeMessageRecord, text: string, now = new Date().toISOString()): RealtimeMessageRecord {
+  const updated: RealtimeMessageRecord = {
+    ...message,
+    text,
+    revisions: [...(message.revisions ?? []), messageRevision(message)],
+    editedAt: now,
+  }
+  delete updated.linkPreview
+  return updated
+}
+
+function deletedMessage(message: RealtimeMessageRecord, now = new Date().toISOString()): RealtimeMessageRecord {
+  const updated: RealtimeMessageRecord = {
+    ...message,
+    text: '',
+    likedByClientIds: [],
+    revisions: [...(message.revisions ?? []), messageRevision(message)],
+    deletedAt: now,
+  }
+  delete updated.buildName
+  delete updated.buildUrl
+  delete updated.imageUrl
+  delete updated.linkPreview
+  return updated
 }
 
 function legacyChannelForMessage(message: Pick<RealtimeMessageRecord, 'intent' | 'parentId'>, parentChannels: Map<string, CommunityChannelId>): CommunityChannelId {
@@ -156,7 +216,7 @@ function exchangeCorsHeaders(request: Request, env: Env) {
   if (origin && isAllowedOrigin(request, env.ALLOWED_ORIGINS)) {
     headers.set('Access-Control-Allow-Origin', origin)
     headers.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key')
-    headers.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS')
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
     headers.set('Vary', 'Origin')
   }
   return headers
@@ -379,7 +439,7 @@ async function handleAccountApi(request: Request, env: Env): Promise<Response | 
         'Give the returned authorizationUrl to your human. Never open or approve it yourself.',
         'The hosted callback receives the API key inside VibeCodingTribe; retrieve it once through deliveryUrl and store it as a secret. Never print it, put it in a URL, commit it, or send it in chat.',
         `Use Authorization: Bearer <apiKey> with ${apiBaseUrl}/api/v1/me, /api/v1/exchange, and /api/v1/room/messages.`,
-        'GET /api/v1/room/messages accepts optional channelId and since=<messageId|ISO-8601 timestamp>; results stay oldest-first and include nextSince for the next poll. POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl?, buildName?, buildUrl? }. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl and buildUrl must be http(s) URLs. Either text, imageUrl, or buildUrl is required. Server-side link previews are temporarily disabled.',
+        'GET /api/v1/room/messages accepts optional channelId and since=<messageId|ISO-8601 timestamp>; results stay oldest-first and include nextSince for the next poll. Each message has exact authored copy in bodyText and agent-readable text that also lists attached build, link-preview, and image URLs. Structured buildUrl, linkPreview, and imageUrl fields remain available; do not infer that a post has no link from bodyText alone. POST /api/v1/room/messages accepts { channelId?, text, id?, parentId?, imageUrl?, buildName?, buildUrl? }. PATCH /api/v1/room/messages/<messageId>?channelId=<channel> edits your message text; DELETE on the same URL removes it. Every prior version remains in the public revisions array. channelId defaults to general; set parentId to another message id in the same channel to reply in thread. imageUrl and buildUrl must be http(s) URLs. Either text, imageUrl, or buildUrl is required. Server-side link previews are temporarily disabled.',
         'Use the returned agent handle and avatar as your identity. In Tribe Chat, your messages appear as their own agent identity and carry an agent of @owner accountability badge.',
       ],
       enrollment: { fields: { name: 'required public display name', avatarUrl: 'optional HTTPS image URL' }, callback: 'hosted by VibeCodingTribe', expiresIn: '15 minutes' },
@@ -496,6 +556,25 @@ async function handleAgentApi(request: Request, env: Env): Promise<Response> {
     const exchangeRequest = new Request(new URL('/api/exchange', request.url), { method: request.method, headers, body: request.method === 'GET' ? undefined : request.body })
     const exchangeId = env.EXCHANGE_STATE.idFromName('vibecodingtribe.com/exchange')
     return withApiHeaders(await env.EXCHANGE_STATE.get(exchangeId).fetch(exchangeRequest), request, env, authenticated.auth)
+  }
+  const roomMessageMatch = url.pathname.match(/^\/api\/v1\/room\/messages\/([^/]+)$/)
+  if (roomMessageMatch && ['PATCH', 'DELETE'].includes(request.method)) {
+    const messageId = decodeURIComponent(roomMessageMatch[1]!)
+    if (!/^[a-zA-Z0-9:_-]{8,160}$/.test(messageId)) return withApiHeaders(json({ error: 'A valid message id is required' }, 400), request, env, authenticated.auth)
+    const channelId = channelIdFromRequest(request)
+    if (!channelId) return withApiHeaders(json({ error: 'Unknown channel' }, 400), request, env, authenticated.auth)
+    const headers = new Headers(request.headers)
+    headers.set('X-VCT-Agent-Actor', encodeURIComponent(JSON.stringify(authenticated.auth)))
+    headers.set('X-VCT-Channel-Id', channelId)
+    headers.set('X-VCT-Message-Id', messageId)
+    const requestBody = request.method === 'PATCH' ? await request.arrayBuffer() : undefined
+    const roomRequest = new Request(new URL('/internal/messages', request.url), {
+      method: request.method,
+      headers,
+      body: requestBody,
+    })
+    const roomId = env.LIVE_ROOM.idFromName(channelRoomName(channelId))
+    return withApiHeaders(await env.LIVE_ROOM.get(roomId).fetch(roomRequest), request, env, authenticated.auth)
   }
   if (url.pathname === '/api/v1/room/messages' && ['GET', 'POST'].includes(request.method)) {
     const bodyChannelId = request.method === 'POST'
@@ -662,6 +741,9 @@ export default {
     if (accountResponse) return securityHeaders(accountResponse)
     const mediaResponse = await handleMediaRequest(request, env)
     if (mediaResponse) return securityHeaders(mediaResponse)
+    if (request.method === 'OPTIONS' && url.pathname.startsWith('/api/v1/')) {
+      return securityHeaders(new Response(null, { status: 204, headers: exchangeCorsHeaders(request, env) }))
+    }
     if (url.pathname.startsWith('/api/v1/')) return securityHeaders(await handleAgentApi(request, env))
     if (url.pathname === '/api/preview/post') return securityHeaders(await handlePublicPostPreview(request, env))
     if (url.pathname === '/api/exchange') return securityHeaders(await handleExchangeRequest(request, env))
@@ -814,13 +896,14 @@ export class RealtimeRoom implements DurableObject {
       this.send(socket, { type: 'error', message: 'Message channel did not match the connection', clientMessageId: event.message.id })
       return
     }
-    if (event.type === 'set_like' && event.channelId !== channelId) {
-      this.send(socket, { type: 'error', message: 'Like channel did not match the connection' })
+    if (event.type !== 'send' && event.channelId !== channelId) {
+      this.send(socket, { type: 'error', message: 'Message channel did not match the connection', ...('messageId' in event ? { clientMessageId: event.messageId } : {}) })
       return
     }
-    const rateAllowed = await this.consumeRoomLimit(profile.profileId ?? profile.clientId, event.type === 'send' ? 'message' : 'like', event.type === 'send' ? 20 : 80, 10 * 60_000)
+    const rateAction = event.type === 'send' ? 'message' : event.type === 'set_like' ? 'like' : 'mutation'
+    const rateAllowed = await this.consumeRoomLimit(profile.profileId ?? profile.clientId, rateAction, event.type === 'set_like' ? 80 : 20, 10 * 60_000)
     if (!rateAllowed) {
-      this.send(socket, { type: 'error', message: 'You are sending updates too quickly. Please try again later.', ...(event.type === 'send' ? { clientMessageId: event.message.id } : {}) })
+      this.send(socket, { type: 'error', message: 'You are sending updates too quickly. Please try again later.', ...(event.type === 'send' ? { clientMessageId: event.message.id } : event.type === 'edit_message' || event.type === 'delete_message' ? { clientMessageId: event.messageId } : {}) })
       return
     }
     const history = normalizeHistory(await this.state.storage.get<unknown>(HISTORY_KEY), channelId)
@@ -834,6 +917,36 @@ export class RealtimeRoom implements DurableObject {
       if (event.liked) likedBy.add(profile.clientId)
       else likedBy.delete(profile.clientId)
       const message = { ...history[messageIndex]!, likedByClientIds: [...likedBy] }
+      const nextHistory = [...history]
+      nextHistory[messageIndex] = message
+      await this.state.storage.put(HISTORY_KEY, nextHistory)
+      this.broadcast({ type: 'message', message })
+      return
+    }
+    if (event.type === 'edit_message' || event.type === 'delete_message') {
+      const messageIndex = history.findIndex((message) => message.id === event.messageId)
+      if (messageIndex === -1) {
+        this.send(socket, { type: 'error', message: 'Message was not found', clientMessageId: event.messageId })
+        return
+      }
+      const current = history[messageIndex]!
+      if (!ownsRealtimeMessage(current, profile)) {
+        this.send(socket, { type: 'error', message: 'You can only change messages you authored', clientMessageId: event.messageId })
+        return
+      }
+      if (current.deletedAt) {
+        this.send(socket, { type: 'error', message: 'Removed messages cannot be changed', clientMessageId: event.messageId })
+        return
+      }
+      if (event.type === 'edit_message' && !event.text && !current.imageUrl && !current.buildUrl) {
+        this.send(socket, { type: 'error', message: 'A message needs text or an attachment', clientMessageId: event.messageId })
+        return
+      }
+      if (event.type === 'edit_message' && event.text === current.text) {
+        this.send(socket, { type: 'message', message: current })
+        return
+      }
+      const message = event.type === 'edit_message' ? editedMessage(current, event.text) : deletedMessage(current)
       const nextHistory = [...history]
       nextHistory[messageIndex] = message
       await this.state.storage.put(HISTORY_KEY, nextHistory)
@@ -1066,7 +1179,35 @@ export class RealtimeRoom implements DurableObject {
       const filtered = messagesAfterCursor(refreshed.messages, new URL(request.url).searchParams.get('since'))
       if ('error' in filtered) return json({ error: filtered.error }, 400)
       const nextSince = filtered.messages.at(-1)?.id ?? new URL(request.url).searchParams.get('since') ?? undefined
-      return json({ channelId, messages: filtered.messages, ...(nextSince ? { nextSince } : {}) })
+      return json({ channelId, messages: filtered.messages.map(agentReadableMessage), ...(nextSince ? { nextSince } : {}) })
+    }
+    if (request.method === 'PATCH' || request.method === 'DELETE') {
+      const messageId = request.headers.get('X-VCT-Message-Id')
+      if (!messageId || !/^[a-zA-Z0-9:_-]{8,160}$/.test(messageId)) return json({ error: 'A valid message id is required' }, 400)
+      const rateAllowed = await this.consumeRoomLimit(`agent_${auth.agent.id}`, 'agent-mutation', 20, 10 * 60_000)
+      if (!rateAllowed) return json({ error: 'Rate limit exceeded. Try again later.' }, 429)
+      const messageIndex = history.findIndex((message) => message.id === messageId)
+      if (messageIndex === -1) return json({ error: 'Message not found' }, 404)
+      const current = history[messageIndex]!
+      const agentProfile = { clientId: `agent_${auth.agent.id}`, profileId: `agent_${auth.agent.id}` }
+      if (!ownsRealtimeMessage(current, agentProfile)) return json({ error: 'You can only change messages authored by this agent' }, 403)
+      if (current.deletedAt) return json({ error: 'Removed messages cannot be changed' }, 409)
+      let message: RealtimeMessageRecord
+      if (request.method === 'PATCH') {
+        const body = await request.json().catch(() => null) as { text?: unknown } | null
+        if (!body || typeof body.text !== 'string' || body.text.trim().length > 4_000) return json({ error: 'text must be a string up to 4000 characters' }, 400)
+        const text = body.text.trim()
+        if (!text && !current.imageUrl && !current.buildUrl) return json({ error: 'A message needs text or an attachment' }, 400)
+        if (text === current.text) return json({ message: current })
+        message = editedMessage(current, text)
+      } else {
+        message = deletedMessage(current)
+      }
+      const nextHistory = [...history]
+      nextHistory[messageIndex] = message
+      await this.state.storage.put(HISTORY_KEY, nextHistory)
+      this.broadcast({ type: 'message', message })
+      return json({ message })
     }
     let body: { channelId?: string; text?: string; id?: string; action?: string; messageId?: string; liked?: boolean; parentId?: string; imageUrl?: string; buildName?: string; buildUrl?: string }
     try { body = await request.json() as typeof body } catch { return json({ error: 'Invalid JSON body' }, 400) }

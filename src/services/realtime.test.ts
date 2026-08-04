@@ -121,6 +121,29 @@ describe('RealtimeRoomClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('queues edit and delete mutations for reconnect-safe delivery', () => {
+    const profile = loadRealtimeProfile()
+    const socket = new FakeWebSocket()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RealtimeRoomClient(
+      profile,
+      { onEvent: () => undefined, onStatus: () => undefined },
+      () => socket as unknown as WebSocket,
+    )
+
+    client.editMessage('rt_message_12345678', 'Revised message')
+    client.deleteMessage('rt_reply_12345678')
+    client.connect()
+    socket.open()
+
+    expect(socket.sent.map((value) => JSON.parse(value))).toEqual([
+      { type: 'edit_message', channelId: 'general', messageId: 'rt_message_12345678', text: 'Revised message' },
+      { type: 'delete_message', channelId: 'general', messageId: 'rt_reply_12345678' },
+    ])
+    client.disconnect()
+    vi.unstubAllGlobals()
+  })
+
   it('keeps public viewer sockets read-only', () => {
     const profile = loadRealtimeProfile()
     const socket = new FakeWebSocket()

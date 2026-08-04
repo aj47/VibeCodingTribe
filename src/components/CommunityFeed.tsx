@@ -6,16 +6,19 @@ import {
   ExternalLink,
   Github,
   Heart,
+  History,
   ImagePlus,
   Link2,
   Linkedin,
   LoaderCircle,
   Menu,
   MessageCircle,
+  Pencil,
   Radio,
   Rocket,
   Send,
   Share2,
+  Trash2,
   UserRound,
   Users,
   X,
@@ -50,6 +53,8 @@ interface CommunityFeedProps {
   threadId?: string
   onSend: (input: CommunityPostInput) => void
   onToggleLike: (messageId: string, liked: boolean) => void
+  onEditMessage: (messageId: string, text: string) => void
+  onDeleteMessage: (messageId: string) => void
   onUploadImage: (file: File) => Promise<string>
   onSignIn: (provider: AuthProvider) => void
   localPreviewAvailable?: boolean
@@ -59,6 +64,7 @@ interface CommunityFeedProps {
   onOpenMissions: () => void
   onOpenChannel: (channelId: CommunityChannelId) => void
   onOpenThread: (channelId: CommunityChannelId, parentId: string) => void
+  onCloseThread?: () => void
   onReadThread: (channelId: CommunityChannelId, parentId: string, activityAt: string) => void
   onOpenProfile: (profileId: string) => void
   onOpenOwnProfile: () => void
@@ -77,6 +83,13 @@ const POST_META: Record<CommunityPostKind, { label: string; context: string; ico
   chat: { label: 'Chat', context: 'Community conversation', icon: MessageCircle },
   showcase: { label: 'Showcase', context: 'Build in public', icon: Rocket },
   feedback: { label: 'Feedback request', context: 'Open · needs your eyes', icon: Radio },
+}
+
+const REPLY_PREVIEW_CHARACTER_LIMIT = 420
+const REPLY_PREVIEW_LINE_LIMIT = 6
+
+function needsReplyPreview(value: string) {
+  return value.trim().length > REPLY_PREVIEW_CHARACTER_LIMIT || value.split('\n').length > REPLY_PREVIEW_LINE_LIMIT
 }
 
 function postKind(message: Pick<RealtimeMessageRecord, 'intent'>): CommunityPostKind {
@@ -101,6 +114,14 @@ function relativeTime(timestamp: string) {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
   return `${Math.floor(seconds / 86400)}d`
+}
+
+function absoluteTime(timestamp: string) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp))
+}
+
+function ownsMessage(message: RealtimeMessageRecord, profile: RealtimeProfile) {
+  return Boolean((profile.profileId && message.profileId === profile.profileId) || message.clientId === profile.clientId)
 }
 
 function pointsLabel(points: number | undefined) {
@@ -257,6 +278,8 @@ export function CommunityFeed({
   threadId,
   onSend,
   onToggleLike,
+  onEditMessage,
+  onDeleteMessage,
   onUploadImage,
   onSignIn,
   localPreviewAvailable,
@@ -264,6 +287,7 @@ export function CommunityFeed({
   onSignOut,
   onOpenChannel,
   onOpenThread,
+  onCloseThread = () => {},
   onReadThread,
   onOpenProfile,
   onOpenOwnProfile,
@@ -285,9 +309,16 @@ export function CommunityFeed({
   const [publishing, setPublishing] = useState(false)
   const [publishingReply, setPublishingReply] = useState(false)
   const [channelPickerOpen, setChannelPickerOpen] = useState(false)
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [historyMessageId, setHistoryMessageId] = useState<string | null>(null)
+  const [deleteMessageId, setDeleteMessageId] = useState<string | null>(null)
+  const [expandedReplyIds, setExpandedReplyIds] = useState<Set<string>>(() => new Set())
   const replyRef = useRef<HTMLTextAreaElement>(null)
+  const editRef = useRef<HTMLTextAreaElement>(null)
+  const modalCloseRef = useRef<HTMLButtonElement>(null)
+  const threadDrawerCloseRef = useRef<HTMLButtonElement>(null)
   const channelPickerButtonRef = useRef<HTMLButtonElement>(null)
-  const threadRefs = useRef(new Map<string, HTMLElement>())
 
   useEffect(() => {
     setIntent(missionsOnly ? 'needs_feedback' : intentForChannel(channelId))
@@ -296,6 +327,22 @@ export function CommunityFeed({
   useEffect(() => {
     if (!channelPickerOpen) channelPickerButtonRef.current?.focus()
   }, [channelPickerOpen])
+
+  useEffect(() => {
+    if (editingMessageId) editRef.current?.focus()
+  }, [editingMessageId])
+
+  useEffect(() => {
+    if (!historyMessageId && !deleteMessageId) return
+    modalCloseRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setHistoryMessageId(null)
+      setDeleteMessageId(null)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [deleteMessageId, historyMessageId])
 
   useEffect(() => () => {
     if (pastedImage) URL.revokeObjectURL(pastedImage.previewUrl)
@@ -327,19 +374,31 @@ export function CommunityFeed({
     }
     return grouped
   }, [messages])
+  const threadRoot = useMemo(() => threadId ? topLevel.find((message) => message.id === threadId) : undefined, [threadId, topLevel])
+  const threadReplies = useMemo(() => threadRoot ? replies.get(threadRoot.id) ?? [] : [], [replies, threadRoot])
+  const threadKind = threadRoot ? postKind(threadRoot) : undefined
+  const threadFeedbackCount = threadReplies.filter((item) => item.commentKind === 'feedback').length
+
   useEffect(() => {
-    if (threadId && replies.has(threadId)) setReplyingTo(threadId)
-  }, [replies, threadId])
+    if (!threadRoot) return
+    setReplyingTo(threadRoot.id)
+    setCommentKind(threadKind === 'feedback' ? 'feedback' : 'reply')
+  }, [threadKind, threadRoot])
+
   useEffect(() => {
-    if (!threadId || replyingTo !== threadId) return
-    const frame = requestAnimationFrame(() => {
-      const thread = threadRefs.current.get(threadId)
-      if (!thread) return
-      thread.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      thread.querySelector<HTMLTextAreaElement>('.community-reply-form textarea')?.focus()
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [replyingTo, threadId])
+    if (!threadRoot) return
+    threadDrawerCloseRef.current?.focus()
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCloseThread()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [onCloseThread, threadRoot])
   const activeThreads = useMemo(() => findActiveThreads(messages, channelId), [channelId, messages])
   const initialMessagesLoaded = messagesLoaded ?? connectionStatus !== 'syncing'
   const messagesLoading = !initialMessagesLoaded && messages.length === 0 && connectionStatus !== 'offline'
@@ -354,6 +413,35 @@ export function CommunityFeed({
     if (thread) onReadThread(channel, parentId, thread.latestActivity)
     onOpenThread(channel, parentId)
     setChannelPickerOpen(false)
+  }
+
+  function openPostThread(message: RealtimeMessageRecord) {
+    const postReplies = replies.get(message.id) ?? []
+    const latestReply = [...postReplies].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]
+    if (latestReply) onReadThread(channelId, message.id, latestReply.sentAt)
+    onOpenThread(channelId, message.id)
+    setCommentKind(postKind(message) === 'feedback' ? 'feedback' : 'reply')
+    setReply('')
+    setReplyImage(null)
+    setReplyImageError(null)
+    setReplyingTo(message.id)
+  }
+
+  function closeThread() {
+    setReplyingTo(null)
+    setReply('')
+    setReplyImage(null)
+    setReplyImageError(null)
+    onCloseThread()
+  }
+
+  function toggleExpandedReply(messageId: string) {
+    setExpandedReplyIds((current) => {
+      const next = new Set(current)
+      if (next.has(messageId)) next.delete(messageId)
+      else next.add(messageId)
+      return next
+    })
   }
 
   function capturePastedImage(event: ClipboardEvent<HTMLTextAreaElement>, target: 'post' | 'reply') {
@@ -419,7 +507,7 @@ export function CommunityFeed({
       onSend({ text: reply, parentId, commentKind, ...(imageUrl ? { imageUrl } : {}) })
       setReply('')
       setReplyImage(null)
-      setReplyingTo(null)
+      if (!threadId) setReplyingTo(null)
     } catch (error) {
       setReplyImageError(error instanceof Error ? error.message : 'Could not upload the image. Try again.')
     } finally {
@@ -433,6 +521,72 @@ export function CommunityFeed({
     else await navigator.clipboard?.writeText(url)
   }
 
+  function beginEditing(message: RealtimeMessageRecord) {
+    setEditingMessageId(message.id)
+    setEditDraft(message.text)
+  }
+
+  function saveEdit(event: FormEvent, message: RealtimeMessageRecord) {
+    event.preventDefault()
+    const text = editDraft.trim()
+    if (text === message.text || (!text && !message.imageUrl && !message.buildUrl)) return
+    onEditMessage(message.id, text)
+    setEditingMessageId(null)
+    setEditDraft('')
+  }
+
+  function insertFeedbackOutline() {
+    if (reply.trim()) return
+    setCommentKind('feedback')
+    setReply('What works:\n\nWhat could be clearer:\n\nOne next step:\n')
+    requestAnimationFrame(() => replyRef.current?.focus())
+  }
+
+  function renderReplyForm(parentId: string, parentDisplayName: string, drawer = false) {
+    return <form className={`community-reply-form${drawer ? ' community-reply-form--drawer' : ''}`} onSubmit={(event) => void publishReply(event, parentId)}>
+      {commentKind === 'feedback' && <div className="community-feedback-guide">
+        <div><strong>Make it actionable</strong><span>What works · what’s unclear · one next step</span></div>
+        <button type="button" disabled={Boolean(reply.trim())} onClick={insertFeedbackOutline}>Use outline</button>
+      </div>}
+      <textarea ref={replyRef} aria-label={`${commentKind === 'feedback' ? 'Give feedback on' : 'Reply to'} ${parentDisplayName}`} placeholder={commentKind === 'feedback' ? 'Share what works, what is unclear, and one next step…' : 'Reply to the conversation or paste an image…'} value={reply} onPaste={(event) => capturePastedImage(event, 'reply')} onChange={(event) => setReply(event.target.value)} />
+      {replyImage && <PastedImagePreview image={replyImage} onRemove={() => setReplyImage(null)} />}
+      {replyImageError && <p className="community-image-error" role="alert">{replyImageError}</p>}
+      <div><span><button className={commentKind === 'feedback' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('feedback')}>Feedback</button><button className={commentKind === 'reply' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('reply')}>Reply</button></span><button type="button" aria-label="Cancel reply" onClick={drawer ? closeThread : () => { setReplyingTo(null); setReplyImage(null); setReplyImageError(null) }}><X size={14} /></button><button className="community-publish" type="submit" disabled={(!reply.trim() && !replyImage) || publishingReply}>{publishingReply ? <LoaderCircle className="is-spinning" size={14} /> : 'Send'}</button></div>
+    </form>
+  }
+
+  function renderReply(item: RealtimeMessageRecord, full = false) {
+    const canCollapse = Boolean(item.text && needsReplyPreview(item.text))
+    const expanded = full || expandedReplyIds.has(item.id)
+    return <div className={`community-reply community-reply--${item.commentKind === 'feedback' ? 'feedback' : 'reply'}`} key={item.id}>
+      <button type="button" onClick={() => item.profileId && onOpenProfile(item.profileId)}><Avatar item={item} /></button>
+      <div>
+        <div className="community-reply__meta"><span><strong>{item.displayName} <span className="community-reply-points">{pointsLabel(item.points)}</span></strong> · {relativeTime(item.sentAt)}{item.editedAt && !item.deletedAt ? ' · edited' : ''} <em>{item.commentKind === 'feedback' ? 'Feedback' : 'Reply'}</em></span><span className="community-reply__actions">{!!item.revisions?.length && <button type="button" onClick={() => setHistoryMessageId(item.id)}><History size={11} /> History</button>}{ownsMessage(item, profile) && !item.deletedAt && <><button type="button" onClick={() => beginEditing(item)}><Pencil size={11} /> Edit</button><button className="is-destructive" type="button" onClick={() => setDeleteMessageId(item.id)}><Trash2 size={11} /> Remove</button></>}</span></div>
+        {item.deletedAt ? <div className="community-reply-removed"><Trash2 size={13} /><span>Response removed by its author. <button type="button" onClick={() => setHistoryMessageId(item.id)}>View history</button></span></div> : editingMessageId === item.id ? <form className="community-message-editor community-message-editor--reply" onSubmit={(event) => saveEdit(event, item)}><label htmlFor={`edit-${item.id}`}>Edit response</label><textarea ref={editRef} id={`edit-${item.id}`} maxLength={4000} value={editDraft} onChange={(event) => setEditDraft(event.target.value)} /><div><small>Previous versions stay public.</small><button type="button" onClick={() => setEditingMessageId(null)}>Cancel</button><button className="community-publish" type="submit" disabled={editDraft.trim() === item.text || (!editDraft.trim() && !item.imageUrl)}>Save changes</button></div></form> : <>
+          {item.text && <div className={`community-reply-copy${canCollapse && !expanded ? ' is-collapsed' : ''}`}><p className="community-reply-body">{item.text}</p></div>}
+          {canCollapse && !full && <button className="community-reply-expand" type="button" aria-expanded={expanded} onClick={() => toggleExpandedReply(item.id)}>{expanded ? 'Show less' : 'Read full feedback'}</button>}
+          {item.imageUrl && <img className="community-reply-image" src={item.imageUrl} alt={item.text || 'Image shared in this response'} loading="lazy" />}
+          <button className="community-reply-like" type="button" disabled={!canPost} aria-pressed={item.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${item.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} response by ${item.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(item.id, !(item.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={12} fill="currentColor" /> {item.likedByClientIds?.length ? item.likedByClientIds.length : 'Like'}</button>
+        </>}
+      </div>
+    </div>
+  }
+
+  const historyMessage = historyMessageId ? messages.find((message) => message.id === historyMessageId) ?? null : null
+  const deleteMessage = deleteMessageId ? messages.find((message) => message.id === deleteMessageId) ?? null : null
+  const historyVersions = historyMessage ? [
+    ...(historyMessage.deletedAt ? [] : [{
+      revision: (historyMessage.revisions?.length ?? 0) + 1,
+      createdAt: historyMessage.editedAt ?? historyMessage.sentAt,
+      text: historyMessage.text,
+      buildName: historyMessage.buildName,
+      buildUrl: historyMessage.buildUrl,
+      imageUrl: historyMessage.imageUrl,
+      current: true,
+    }]),
+    ...[...(historyMessage.revisions ?? [])].reverse().map((revision) => ({ ...revision, current: false })),
+  ] : []
+
   return <div className="community-shell">
     <header className="community-topbar">
       <div className="community-brand-button"><Brand /></div>
@@ -443,7 +597,7 @@ export function CommunityFeed({
       <div className="community-topbar__actions">
         <span className={`community-live community-live--${connectionStatus}`}><i />{connectionStatus === 'connected' ? `${onlineCount} live` : connectionStatus}</span>
         <ThemeToggle />
-        <button type="button" className="community-icon-button" aria-label="Notifications"><Bell size={17} /></button>
+        <button type="button" className="community-icon-button" aria-label="Email and notification settings" title="Email and notification settings" onClick={onOpenOwnProfile}><Bell size={17} /></button>
         {canPost ? <div className="community-account">
           <button type="button" className="community-account__trigger" aria-expanded={accountOpen} onClick={() => setAccountOpen((open) => !open)}><Avatar item={profile} /><span>@{profile.handle}</span><ChevronDown size={13} /></button>
           {accountOpen && <div className="community-account__menu">
@@ -514,10 +668,6 @@ export function CommunityFeed({
             const hiddenReplyCount = postReplies.length - renderedReplies.filter(Boolean).length
             const feedbackCount = postReplies.filter((item) => item.commentKind === 'feedback').length
             return <article
-              ref={(element) => {
-                if (element) threadRefs.current.set(message.id, element)
-                else threadRefs.current.delete(message.id)
-              }}
               className={`community-post community-post--${kind}${threadId === message.id ? ' is-thread-focused' : ''}`}
               data-thread-id={message.id}
               key={message.id}
@@ -526,25 +676,77 @@ export function CommunityFeed({
               <div className="community-post__typebar"><span><PostIcon size={13} /> {meta.label}</span><small>{meta.context}</small></div>
               <header>
                 <button type="button" onClick={() => message.profileId && onOpenProfile(message.profileId)}><Avatar item={message} /></button>
-                <div><button type="button" className="community-author" onClick={() => message.profileId && onOpenProfile(message.profileId)}>{message.displayName} <span className="community-author-points">{pointsLabel(message.points)}</span></button><span>@{message.handle} · {relativeTime(message.sentAt)}</span></div>
-                {kind === 'feedback' && <em className="community-feedback-count">{feedbackCount ? `${feedbackCount} feedback` : 'Awaiting feedback'}</em>}
+                <div><button type="button" className="community-author" onClick={() => message.profileId && onOpenProfile(message.profileId)}>{message.displayName} <span className="community-author-points">{pointsLabel(message.points)}</span></button><span>@{message.handle} · {relativeTime(message.sentAt)}{message.editedAt && !message.deletedAt ? ' · edited' : ''}</span></div>
+                <div className="community-post__header-actions">
+                  {kind === 'feedback' && !message.deletedAt && <em className="community-feedback-count">{feedbackCount ? `${feedbackCount} feedback` : 'Awaiting feedback'}</em>}
+                  {!!message.revisions?.length && <button type="button" onClick={() => setHistoryMessageId(message.id)}><History size={12} /> History</button>}
+                  {ownsMessage(message, profile) && !message.deletedAt && <><button type="button" onClick={() => beginEditing(message)}><Pencil size={12} /> Edit</button><button className="is-destructive" type="button" onClick={() => setDeleteMessageId(message.id)}><Trash2 size={12} /> Remove</button></>}
+                </div>
               </header>
-              {message.text && <p>{message.text}</p>}
-              {message.imageUrl && <figure className="community-post-image"><img src={message.imageUrl} alt={message.text || 'Image shared with this post'} loading="lazy" /></figure>}
-              {(message.linkPreview || message.buildUrl || extractFirstHttpUrl(message.text)) && <CommunityLinkPreview message={message} />}
-              {message.buildName && <a className="community-build-attachment" href={message.buildUrl || '#'} target={message.buildUrl ? '_blank' : undefined} rel="noreferrer"><span><Rocket size={18} /></span><div><small>ATTACHED BUILD</small><strong>{message.buildName}</strong></div>{message.buildUrl && <ExternalLink size={14} />}</a>}
-              <footer>
-                <button type="button" onClick={() => { const latestReply = [...postReplies].sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0]; if (latestReply) onReadThread(channelId, message.id, latestReply.sentAt); onOpenThread(channelId, message.id); setCommentKind(kind === 'feedback' ? 'feedback' : 'reply'); setReply(''); setReplyImage(null); setReplyImageError(null); setReplyingTo(message.id); requestAnimationFrame(() => replyRef.current?.focus()) }}><MessageCircle size={14} /> {postReplies.length ? `${postReplies.length} response${postReplies.length === 1 ? '' : 's'}` : kind === 'feedback' ? 'Give feedback' : 'Reply'}</button>
+              {message.deletedAt ? <div className="community-message-removed"><Trash2 size={17} /><div><strong>Post removed by its author</strong><span>The public revision history remains available for transparency.</span></div><button type="button" onClick={() => setHistoryMessageId(message.id)}><History size={13} /> View history</button></div> : editingMessageId === message.id ? <form className="community-message-editor community-message-editor--post" onSubmit={(event) => saveEdit(event, message)}><label htmlFor={`edit-${message.id}`}>Edit post</label><textarea ref={editRef} id={`edit-${message.id}`} maxLength={4000} value={editDraft} onChange={(event) => setEditDraft(event.target.value)} /><div><small>Previous versions stay public.</small><button type="button" onClick={() => setEditingMessageId(null)}>Cancel</button><button className="community-publish" type="submit" disabled={editDraft.trim() === message.text || (!editDraft.trim() && !message.imageUrl && !message.buildUrl)}>Save changes</button></div></form> : <>
+                {message.text && <p>{message.text}</p>}
+                {message.imageUrl && <figure className="community-post-image"><img src={message.imageUrl} alt={message.text || 'Image shared with this post'} loading="lazy" /></figure>}
+                {(message.linkPreview || message.buildUrl || extractFirstHttpUrl(message.text)) && <CommunityLinkPreview message={message} />}
+                {message.buildName && <a className="community-build-attachment" href={message.buildUrl || '#'} target={message.buildUrl ? '_blank' : undefined} rel="noreferrer"><span><Rocket size={18} /></span><div><small>ATTACHED BUILD</small><strong>{message.buildName}</strong></div>{message.buildUrl && <ExternalLink size={14} />}</a>}
+              </>}
+              {!message.deletedAt && <footer>
+                <button type="button" onClick={() => openPostThread(message)}><MessageCircle size={14} /> {postReplies.length ? `${kind === 'feedback' ? 'View ' : ''}${postReplies.length} response${postReplies.length === 1 ? '' : 's'}` : kind === 'feedback' ? 'Give feedback' : 'Reply'}</button>
                 <button className="community-like" type="button" disabled={!canPost} aria-pressed={message.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${message.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} post by ${message.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(message.id, !(message.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={14} fill="currentColor" /> {message.likedByClientIds?.length ? message.likedByClientIds.length : 'Like'}</button>
                 <button type="button" onClick={() => void sharePost(message)}><Share2 size={14} /> {kind === 'showcase' ? 'Share showcase' : kind === 'feedback' ? 'Share request' : 'Share'}</button>
-              </footer>
-              {postReplies.length > 0 && <div className="community-replies" aria-label={`Responses to ${message.displayName}`}>{renderedReplies.map((item) => item ? <div className={`community-reply community-reply--${item.commentKind === 'feedback' ? 'feedback' : 'reply'}`} key={item.id}><button type="button" onClick={() => item.profileId && onOpenProfile(item.profileId)}><Avatar item={item} /></button><div><span><strong>{item.displayName} <span className="community-reply-points">{pointsLabel(item.points)}</span></strong> · {relativeTime(item.sentAt)} <em>{item.commentKind === 'feedback' ? 'Feedback' : 'Reply'}</em></span>{item.text && <p className="community-reply-body">{item.text}</p>}{item.imageUrl && <img className="community-reply-image" src={item.imageUrl} alt={item.text || 'Image shared in this response'} loading="lazy" />}<button className="community-reply-like" type="button" disabled={!canPost} aria-pressed={item.likedByClientIds?.includes(profile.clientId) ?? false} aria-label={`${item.likedByClientIds?.includes(profile.clientId) ? 'Unlike' : 'Like'} response by ${item.displayName}`} title={canPost ? undefined : 'Sign in to like'} onClick={() => onToggleLike(item.id, !(item.likedByClientIds?.includes(profile.clientId) ?? false))}><Heart size={12} fill="currentColor" /> {item.likedByClientIds?.length ? item.likedByClientIds.length : 'Like'}</button></div></div> : <div className="community-replies__hidden" key={`${message.id}-hidden`} role="status">… {hiddenReplyCount} middle repl{hiddenReplyCount === 1 ? 'y' : 'ies'} hidden …</div>)}</div>}
-              {replyingTo === message.id && <form className="community-reply-form" onSubmit={(event) => void publishReply(event, message.id)}><textarea ref={replyRef} aria-label={`Reply to ${message.displayName}`} placeholder="Leave useful feedback, ask a question, or paste an image…" value={reply} onPaste={(event) => capturePastedImage(event, 'reply')} onChange={(event) => setReply(event.target.value)} />{replyImage && <PastedImagePreview image={replyImage} onRemove={() => setReplyImage(null)} />}{replyImageError && <p className="community-image-error" role="alert">{replyImageError}</p>}<div><span><button className={commentKind === 'feedback' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('feedback')}>Feedback</button><button className={commentKind === 'reply' ? 'is-active' : ''} type="button" onClick={() => setCommentKind('reply')}>Reply</button></span><button type="button" aria-label="Cancel reply" onClick={() => { setReplyingTo(null); setReplyImage(null); setReplyImageError(null) }}><X size={14} /></button><button className="community-publish" type="submit" disabled={(!reply.trim() && !replyImage) || publishingReply}>{publishingReply ? <LoaderCircle className="is-spinning" size={14} /> : 'Send'}</button></div></form>}
+              </footer>}
+              {postReplies.length > 0 && threadId !== message.id && <div className="community-replies" aria-label={`Responses to ${message.displayName}`}>{renderedReplies.map((item) => item ? renderReply(item) : <button className="community-replies__hidden" key={`${message.id}-hidden`} type="button" onClick={() => openPostThread(message)} aria-label={`View ${hiddenReplyCount} more response${hiddenReplyCount === 1 ? '' : 's'}`}><ChevronDown size={13} /> View {hiddenReplyCount} more response{hiddenReplyCount === 1 ? '' : 's'}</button>)}</div>}
+              {!message.deletedAt && !threadId && replyingTo === message.id && renderReplyForm(message.id, message.displayName)}
             </article>
           })}
         </div>
       </section>
 
     </main>
+    {threadRoot && threadKind && <div className="community-thread-drawer" role="presentation">
+      <button className="community-thread-drawer__backdrop" type="button" aria-label="Close thread" onClick={closeThread} />
+      <aside className="community-thread-drawer__panel" role="dialog" aria-modal="true" aria-labelledby="community-thread-title">
+        <header className="community-thread-drawer__header">
+          <div><span><MessageCircle size={14} /> {threadKind === 'feedback' ? 'FEEDBACK THREAD' : 'CONVERSATION THREAD'}</span><h2 id="community-thread-title">{threadKind === 'feedback' ? 'Review this request' : 'Follow the conversation'}</h2><p>{threadKind === 'feedback' ? `${threadFeedbackCount ? `${threadFeedbackCount} feedback` : 'No feedback yet'} · ${threadReplies.length} total response${threadReplies.length === 1 ? '' : 's'}` : `${threadReplies.length} response${threadReplies.length === 1 ? '' : 's'} in this thread`}</p></div>
+          <button ref={threadDrawerCloseRef} type="button" aria-label="Close thread" onClick={closeThread}><X size={18} /></button>
+        </header>
+        <div className="community-thread-drawer__content">
+          <article className={`community-thread-drawer__root community-thread-drawer__root--${threadKind}`}>
+            <header>
+              <button type="button" onClick={() => threadRoot.profileId && onOpenProfile(threadRoot.profileId)}><Avatar item={threadRoot} /></button>
+              <div><button type="button" className="community-author" onClick={() => threadRoot.profileId && onOpenProfile(threadRoot.profileId)}>{threadRoot.displayName} <span className="community-author-points">{pointsLabel(threadRoot.points)}</span></button><span>@{threadRoot.handle} · {relativeTime(threadRoot.sentAt)}{threadRoot.editedAt && !threadRoot.deletedAt ? ' · edited' : ''}</span></div>
+            </header>
+            {threadRoot.deletedAt ? <div className="community-message-removed"><Trash2 size={17} /><div><strong>Post removed by its author</strong><span>The public revision history remains available for transparency.</span></div></div> : <>
+              {threadRoot.text && <p className="community-thread-drawer__root-body">{threadRoot.text}</p>}
+              {threadRoot.imageUrl && <figure className="community-post-image"><img src={threadRoot.imageUrl} alt={threadRoot.text || 'Image shared with this post'} loading="lazy" /></figure>}
+              {(threadRoot.linkPreview || threadRoot.buildUrl || extractFirstHttpUrl(threadRoot.text)) && <CommunityLinkPreview message={threadRoot} />}
+              {threadRoot.buildName && <a className="community-build-attachment" href={threadRoot.buildUrl || '#'} target={threadRoot.buildUrl ? '_blank' : undefined} rel="noreferrer"><span><Rocket size={18} /></span><div><small>ATTACHED BUILD</small><strong>{threadRoot.buildName}</strong></div>{threadRoot.buildUrl && <ExternalLink size={14} />}</a>}
+            </>}
+          </article>
+          <section className="community-thread-drawer__responses" aria-label={`Responses to ${threadRoot.displayName}`}>
+            <header><span>RESPONSES</span><strong>{threadReplies.length}</strong></header>
+            {threadReplies.length > 0 ? threadReplies.map((item) => renderReply(item, true)) : <div className="community-thread-drawer__empty"><MessageCircle size={18} /><strong>No responses yet</strong><p>Be the first builder to leave a useful perspective.</p></div>}
+          </section>
+          {canPost ? renderReplyForm(threadRoot.id, threadRoot.displayName, true) : <section className="community-thread-drawer__signin"><div><strong>Have a useful perspective?</strong><p>Sign in to add feedback or reply to this conversation.</p></div><div><button type="button" onClick={() => onSignIn('github')}><Github size={14} /> GitHub</button><button type="button" onClick={() => onSignIn('linkedin')}><Linkedin size={14} /> LinkedIn</button></div></section>}
+        </div>
+      </aside>
+    </div>}
+    {historyMessage && <div className="community-modal" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setHistoryMessageId(null) }}>
+      <section className="community-history" role="dialog" aria-modal="true" aria-labelledby="community-history-title">
+        <header><div><span><History size={14} /> PUBLIC RECORD</span><h2 id="community-history-title">{historyMessage.deletedAt ? 'Removed message history' : 'Edit history'}</h2><p>Every version published by {historyMessage.displayName}, newest first.</p></div><button ref={modalCloseRef} type="button" aria-label="Close edit history" onClick={() => setHistoryMessageId(null)}><X size={18} /></button></header>
+        {historyMessage.deletedAt && <div className="community-history__removed"><Trash2 size={14} /><span>Removed {absoluteTime(historyMessage.deletedAt)}. Prior versions remain public.</span></div>}
+        <ol>{historyVersions.map((version) => <li key={`${version.revision}-${version.createdAt}`}>
+          <header><strong>{version.current ? 'Current version' : `Version ${version.revision}`}</strong><time dateTime={version.createdAt}>{absoluteTime(version.createdAt)}</time></header>
+          {version.text ? <p>{version.text}</p> : <p className="is-empty">No text in this version.</p>}
+          {version.imageUrl && <a className="community-history__image" href={version.imageUrl} target="_blank" rel="noreferrer"><img src={version.imageUrl} alt="Attachment from this message version" /><span>Open image attachment <ArrowUpRight size={12} /></span></a>}
+          {(version.buildName || version.buildUrl) && <a className="community-history__build" href={version.buildUrl || '#'} target={version.buildUrl ? '_blank' : undefined} rel="noreferrer"><Rocket size={13} /><span>{version.buildName || version.buildUrl}</span>{version.buildUrl && <ArrowUpRight size={12} />}</a>}
+        </li>)}</ol>
+      </section>
+    </div>}
+    {deleteMessage && <div className="community-modal" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeleteMessageId(null) }}>
+      <section className="community-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="community-delete-title" aria-describedby="community-delete-description">
+        <span className="community-delete-dialog__icon"><Trash2 size={21} /></span><h2 id="community-delete-title">Remove this {deleteMessage.parentId ? 'response' : 'post'}?</h2><p id="community-delete-description">It will be replaced with a public removal notice. Its contents stay available in edit history so the conversation keeps an accountable record.</p>
+        <div><button ref={modalCloseRef} type="button" onClick={() => setDeleteMessageId(null)}>Keep it</button><button className="is-destructive" type="button" onClick={() => { onDeleteMessage(deleteMessage.id); setDeleteMessageId(null); if (editingMessageId === deleteMessage.id) setEditingMessageId(null) }}><Trash2 size={14} /> Remove {deleteMessage.parentId ? 'response' : 'post'}</button></div>
+      </section>
+    </div>}
   </div>
 }

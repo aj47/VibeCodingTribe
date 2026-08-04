@@ -763,7 +763,11 @@ export class AccountStore implements DurableObject {
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${accountId}`)
     if (!account) return json({ error: 'Account not found' }, 404)
     if (typeof body?.activityDigest !== 'boolean') return json({ error: 'activityDigest must be a boolean' }, 400)
-    const providedEmail = body?.email === undefined ? account.email : validEmail(body.email)
+    const providedEmail = body?.email === undefined
+      ? account.email
+      : typeof body.email === 'string' && !body.email.trim()
+        ? undefined
+        : validEmail(body.email)
     if (providedEmail === null) return json({ error: 'Enter a valid email address for activity digests.' }, 400)
     if (body.activityDigest && !providedEmail) return json({ error: 'Add an email address before turning on activity digests.' }, 400)
     account.email = providedEmail || undefined

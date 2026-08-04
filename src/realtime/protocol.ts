@@ -2,6 +2,7 @@ import { DEFAULT_CHANNEL_ID, isCommunityChannelId, normalizeCommunityChannelId, 
 
 export const LIVE_ROOM_KEY = 'vibecodingtribe.com/r/general'
 export const MAX_REALTIME_MESSAGE_LENGTH = 4_000
+const MAX_REALTIME_MESSAGE_REVISIONS = 1_000
 
 export interface RealtimeLinkPreview {
   url: string
@@ -9,6 +10,16 @@ export interface RealtimeLinkPreview {
   description?: string
   imageUrl?: string
   siteName?: string
+}
+
+export interface RealtimeMessageRevision {
+  revision: number
+  createdAt: string
+  text: string
+  buildName?: string
+  buildUrl?: string
+  imageUrl?: string
+  linkPreview?: RealtimeLinkPreview
 }
 
 export interface RealtimeProfile {
@@ -47,6 +58,9 @@ export interface RealtimeMessageRecord {
   imageUrl?: string
   linkPreview?: RealtimeLinkPreview
   likedByClientIds?: string[]
+  revisions?: RealtimeMessageRevision[]
+  editedAt?: string
+  deletedAt?: string
 }
 
 export interface RealtimeSendEvent {
@@ -71,7 +85,20 @@ export interface RealtimeSetLikeEvent {
   liked: boolean
 }
 
-export type RealtimeClientEvent = RealtimeSendEvent | RealtimeSetLikeEvent
+export interface RealtimeEditMessageEvent {
+  type: 'edit_message'
+  channelId: CommunityChannelId
+  messageId: string
+  text: string
+}
+
+export interface RealtimeDeleteMessageEvent {
+  type: 'delete_message'
+  channelId: CommunityChannelId
+  messageId: string
+}
+
+export type RealtimeClientEvent = RealtimeSendEvent | RealtimeSetLikeEvent | RealtimeEditMessageEvent | RealtimeDeleteMessageEvent
 
 export type RealtimeServerEvent =
   | {
@@ -123,6 +150,17 @@ export function parseRealtimeClientEvent(value: unknown): RealtimeClientEvent | 
     if (typeof value.liked !== 'boolean') return null
     const channelId = parseChannelId(value.channelId)
     return channelId ? { type: 'set_like', channelId, messageId: value.messageId, liked: value.liked } : null
+  }
+  if (value.type === 'edit_message') {
+    if (typeof value.messageId !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(value.messageId)) return null
+    if (typeof value.text !== 'string' || value.text.trim().length > MAX_REALTIME_MESSAGE_LENGTH) return null
+    const channelId = parseChannelId(value.channelId)
+    return channelId ? { type: 'edit_message', channelId, messageId: value.messageId, text: value.text.trim() } : null
+  }
+  if (value.type === 'delete_message') {
+    if (typeof value.messageId !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(value.messageId)) return null
+    const channelId = parseChannelId(value.channelId)
+    return channelId ? { type: 'delete_message', channelId, messageId: value.messageId } : null
   }
   if (value.type !== 'send' || !isRecord(value.message)) return null
   const { id, text } = value.message
@@ -237,14 +275,39 @@ export function normalizeRealtimeMessageRecord(value: unknown): RealtimeMessageR
   const avatarUrl = normalizeAvatarUrl(value.avatarUrl)
   const points = normalizePoints(value.points)
   const linkPreview = normalizeLinkPreview(value.linkPreview)
+  const revisions = normalizeMessageRevisions(value.revisions)
   const normalized = {
     ...value,
     channelId: normalizeCommunityChannelId(value.channelId),
     ...(points === undefined ? { points: undefined } : { points }),
     ...(avatarUrl ? { avatarUrl } : { avatarUrl: undefined }),
     ...(linkPreview ? { linkPreview } : { linkPreview: undefined }),
+    ...(revisions ? { revisions } : { revisions: undefined }),
   }
   return isRealtimeMessageRecord(normalized) ? normalized : null
+}
+
+function normalizeMessageRevisions(value: unknown): RealtimeMessageRevision[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_REALTIME_MESSAGE_REVISIONS) return undefined
+  const revisions = value.flatMap((item): RealtimeMessageRevision[] => {
+    if (!isRecord(item) || !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || typeof item.createdAt !== 'string' || typeof item.text !== 'string') return []
+    if (item.text.length > MAX_REALTIME_MESSAGE_LENGTH) return []
+    const buildName = typeof item.buildName === 'string' ? item.buildName.trim().slice(0, 80) : undefined
+    const buildUrl = normalizeHttpUrl(item.buildUrl)
+    const imageUrl = normalizeHttpUrl(item.imageUrl)
+    const revisionLinkPreview = normalizeLinkPreview(item.linkPreview)
+    return [{
+      revision: Number(item.revision),
+      createdAt: item.createdAt,
+      text: item.text,
+      ...(buildName ? { buildName } : {}),
+      ...(buildUrl ? { buildUrl } : {}),
+      ...(imageUrl ? { imageUrl } : {}),
+      ...(revisionLinkPreview ? { linkPreview: revisionLinkPreview } : {}),
+    }]
+  })
+  return revisions.length === value.length ? revisions : undefined
 }
 
 export function isRealtimeProfile(value: unknown): value is RealtimeProfile {
@@ -285,6 +348,13 @@ export function isRealtimeMessageRecord(value: unknown): value is RealtimeMessag
     && (value.buildUrl === undefined || normalizeHttpUrl(value.buildUrl) !== undefined)
     && (value.imageUrl === undefined || normalizeHttpUrl(value.imageUrl) !== undefined)
     && (value.linkPreview === undefined || normalizeLinkPreview(value.linkPreview) !== undefined)
+    && (value.revisions === undefined || (
+      Array.isArray(value.revisions)
+      && value.revisions.length <= MAX_REALTIME_MESSAGE_REVISIONS
+      && normalizeMessageRevisions(value.revisions)?.length === value.revisions.length
+    ))
+    && (value.editedAt === undefined || typeof value.editedAt === 'string')
+    && (value.deletedAt === undefined || typeof value.deletedAt === 'string')
     && (value.likedByClientIds === undefined || (
       Array.isArray(value.likedByClientIds)
       && value.likedByClientIds.length <= 10_000

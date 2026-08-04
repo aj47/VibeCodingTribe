@@ -94,12 +94,12 @@ describe('ProfilePage focused routes', () => {
 
   it('requires a member-confirmed address and opt-in for daily activity digests', async () => {
     render(<ProfilePage session={session} onBack={vi.fn()} onSignIn={vi.fn()} />)
-    const email = await screen.findByRole('textbox', { name: 'Email address' })
-    const enabled = screen.getByRole('checkbox', { name: 'Send me daily activity digests' })
+    const email = await screen.findByRole('textbox', { name: 'Account email' })
+    const enabled = screen.getByRole('checkbox', { name: /Daily activity digest/ })
     expect(enabled).not.toBeChecked()
     fireEvent.change(email, { target: { value: 'ada@example.com' } })
     fireEvent.click(enabled)
-    fireEvent.click(screen.getByRole('button', { name: 'Save digest settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save email preferences' }))
     await waitFor(() => expect(updateActivityDigestPreferences).toHaveBeenCalledWith({ email: 'ada@example.com', activityDigest: true }))
   })
 

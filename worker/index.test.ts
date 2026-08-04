@@ -1,8 +1,34 @@
 import { describe, expect, it, vi } from 'vitest'
-import worker, { cleanupExpiredMedia, runDailyActivityDigest } from './index'
+import worker, { agentReadableMessage, cleanupExpiredMedia, runDailyActivityDigest } from './index'
 import type { TransactionalEmail } from './email'
 
 describe('public room access', () => {
+  it('makes structured attachment URLs visible to text-only agent consumers', () => {
+    const message = {
+      id: 'post_12345678', channelId: 'general', clientId: 'human_builder', displayName: 'Builder', handle: 'builder', avatarColor: '#657c54',
+      text: 'replmux - jupyter kernels in your CLI.', sentAt: '2026-08-03T19:36:14.989Z', buildName: 'replmux',
+      buildUrl: 'https://github.com/memgrafter/replmux',
+      linkPreview: { url: 'https://github.com/memgrafter/replmux', title: 'GitHub - memgrafter/replmux' },
+      imageUrl: 'https://example.com/replmux.png',
+    } as const
+
+    expect(agentReadableMessage(message)).toMatchObject({
+      bodyText: 'replmux - jupyter kernels in your CLI.',
+      text: 'replmux - jupyter kernels in your CLI.\n\nBuild URL: https://github.com/memgrafter/replmux\n\nImage URL: https://example.com/replmux.png',
+      buildUrl: 'https://github.com/memgrafter/replmux',
+    })
+  })
+
+  it('does not duplicate an attachment URL already present in authored text', () => {
+    const message = {
+      id: 'post_12345678', channelId: 'general', clientId: 'human_builder', displayName: 'Builder', handle: 'builder', avatarColor: '#657c54',
+      text: 'Source: https://github.com/memgrafter/replmux', sentAt: '2026-08-03T19:36:14.989Z',
+      buildUrl: 'https://github.com/memgrafter/replmux',
+    } as const
+
+    expect(agentReadableMessage(message).text).toBe(message.text)
+  })
+
   it('redirects public Worker HTTP requests to HTTPS', async () => {
     const response = await worker.fetch(new Request('http://worker.example/health'), {} as never)
     expect(response.status).toBe(308)
@@ -215,6 +241,53 @@ describe('public room access', () => {
     expect(response.status).toBe(200)
     expect(new URL(result.forwardedUrl).searchParams.get('since')).toBe('agent_read_1')
     expect(env.LIVE_ROOM.idFromName).toHaveBeenCalledWith('vibecodingtribe.com/channel/feedback')
+  })
+
+  it('forwards authenticated agent edits and removals to the owning channel room', async () => {
+    const roomFetch = vi.fn(async (incoming: Request) => Response.json({
+      method: incoming.method,
+      messageId: incoming.headers.get('X-VCT-Message-Id'),
+      channelId: incoming.headers.get('X-VCT-Channel-Id'),
+      body: incoming.method === 'PATCH' ? await incoming.json() : null,
+    }))
+    const accountFetch = vi.fn(async () => Response.json({
+      agent: { id: 'agent_1234567890123456', name: 'Scout', handle: 'scout' },
+      owner: { id: 'human_owner', displayName: 'Owner', handle: 'owner', linkedProviders: ['github'] },
+      rateLimit: { limit: 60, remaining: 59, resetAt: '2026-08-03T11:00:00.000Z' },
+    }))
+    const env = {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com', AUTH_APP_ORIGIN: 'https://vibecodingtribe.com', EXCHANGE_STATE: {},
+      LIVE_ROOM: { idFromName: vi.fn((name: string) => name), get: vi.fn(() => ({ fetch: roomFetch })) },
+      ACCOUNTS: { idFromName: vi.fn(() => 'accounts'), get: vi.fn(() => ({ fetch: accountFetch })) },
+    }
+    const authorization = { Authorization: 'Bearer vct_agent_test' }
+
+    const edited = await worker.fetch(new Request('https://worker.example/api/v1/room/messages/agent_message_12345678?channelId=showcases', {
+      method: 'PATCH', headers: { ...authorization, 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Revised by the agent' }),
+    }), env as never)
+    expect(await edited.json()).toEqual({ method: 'PATCH', messageId: 'agent_message_12345678', channelId: 'showcases', body: { text: 'Revised by the agent' } })
+
+    const removed = await worker.fetch(new Request('https://worker.example/api/v1/room/messages/agent_message_12345678?channelId=showcases', {
+      method: 'DELETE', headers: authorization,
+    }), env as never)
+    expect(await removed.json()).toEqual({ method: 'DELETE', messageId: 'agent_message_12345678', channelId: 'showcases', body: null })
+  })
+
+  it('allows unauthenticated browser preflight for agent message removals', async () => {
+    const response = await worker.fetch(new Request('https://worker.example/api/v1/room/messages/agent_message_12345678?channelId=general', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://vibecodingtribe.com',
+        'Access-Control-Request-Method': 'DELETE',
+      },
+    }), {
+      ALLOWED_ORIGINS: 'https://vibecodingtribe.com',
+      AUTH_APP_ORIGIN: 'https://vibecodingtribe.com',
+    } as never)
+
+    expect(response.status).toBe(204)
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('https://vibecodingtribe.com')
+    expect(response.headers.get('Access-Control-Allow-Methods')).toContain('DELETE')
   })
 
 })

@@ -38,6 +38,21 @@ describe('realtime protocol', () => {
     expect(parseRealtimeClientEvent({ type: 'set_like', messageId: 'rt_message_12345678', liked: 'yes' })).toBeNull()
   })
 
+  it('accepts owner edit and delete mutation payloads', () => {
+    expect(parseRealtimeClientEvent({ type: 'edit_message', channelId: 'showcases', messageId: 'rt_message_12345678', text: '  revised copy  ' })).toEqual({
+      type: 'edit_message',
+      channelId: 'showcases',
+      messageId: 'rt_message_12345678',
+      text: 'revised copy',
+    })
+    expect(parseRealtimeClientEvent({ type: 'delete_message', messageId: 'rt_message_12345678' })).toEqual({
+      type: 'delete_message',
+      channelId: 'general',
+      messageId: 'rt_message_12345678',
+    })
+    expect(parseRealtimeClientEvent({ type: 'edit_message', messageId: 'short', text: 'nope' })).toBeNull()
+  })
+
   it('carries structured feed context on the same realtime message', () => {
     expect(parseRealtimeClientEvent({
       type: 'send',
@@ -112,6 +127,18 @@ describe('realtime protocol', () => {
       participants: [{ clientId: 'client_12345678', displayName: 'Local Builder', handle: 'local-builder', avatarColor: '#657c54', avatarUrl: 'https://avatars.example/builder.png' }],
       onlineCount: 1,
     })?.type).toBe('snapshot')
+  })
+
+  it('keeps public revisions and removal timestamps in server records', () => {
+    const event = parseRealtimeServerEvent({
+      type: 'message',
+      message: {
+        id: 'rt_message_12345678', channelId: 'general', clientId: 'client_12345678', displayName: 'Builder', handle: 'builder', avatarColor: '#657c54',
+        text: '', sentAt: '2026-07-18T20:00:00.000Z', deletedAt: '2026-07-18T20:03:00.000Z',
+        revisions: [{ revision: 1, createdAt: '2026-07-18T20:00:00.000Z', text: 'Original copy' }],
+      },
+    })
+    expect(event).toMatchObject({ type: 'message', message: { deletedAt: '2026-07-18T20:03:00.000Z', revisions: [{ text: 'Original copy' }] } })
   })
 
   it('keeps identity labels compact and safe', () => {

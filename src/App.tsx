@@ -338,6 +338,16 @@ export function App() {
     realtimeClientRef.current?.setLike(messageId, liked)
   }, [canPost, profile.clientId])
 
+  const editMessage = useCallback((messageId: string, text: string) => {
+    if (!canPost) return
+    realtimeClientRef.current?.editMessage(messageId, text.trim().slice(0, MAX_REALTIME_MESSAGE_LENGTH))
+  }, [canPost])
+
+  const deleteMessage = useCallback((messageId: string) => {
+    if (!canPost) return
+    realtimeClientRef.current?.deleteMessage(messageId)
+  }, [canPost])
+
   if (surface === 'home' && authChecking) {
     return (
       <main className="session-check" aria-live="polite">
@@ -373,6 +383,12 @@ export function App() {
 
   const openThread = (targetChannelId: CommunityChannelId, parentId: string) => {
     window.history.pushState({}, '', `${channelPath(targetChannelId)}?thread=${encodeURIComponent(parentId)}`)
+    setRouteVersion((current) => current + 1)
+    setSurface('community')
+  }
+
+  const closeThread = () => {
+    window.history.pushState({}, '', channelPath(channelId))
     setRouteVersion((current) => current + 1)
     setSurface('community')
   }
@@ -466,6 +482,8 @@ export function App() {
       connectionStatus={connectionStatus}
       onSend={sendMessage}
       onToggleLike={toggleLike}
+      onEditMessage={editMessage}
+      onDeleteMessage={deleteMessage}
       onUploadImage={uploadCommunityImage}
       missionsOnly={channelId === 'feedback'}
       channelId={channelId}
@@ -495,6 +513,7 @@ export function App() {
       onOpenMissions={openMissions}
       onOpenChannel={openChannel}
       onOpenThread={openThread}
+      onCloseThread={closeThread}
       onReadThread={onReadThread}
       onOpenProfile={openPublicProfile}
       onOpenOwnProfile={openOwnProfile}

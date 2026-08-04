@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowUpRight, BadgeCheck, Github, Globe2, Linkedin, LockKeyhole, MessageCircle, Rocket, Save, ShieldCheck, Sparkles, UserRound } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, BadgeCheck, BellRing, Github, Globe2, Linkedin, LockKeyhole, Mail, MessageCircle, Rocket, Save, ShieldCheck, Sparkles, UserRound } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import type { AuthProvider, AuthSession, PublicAgentProfile, PublicHumanProfile, PublicProfile } from '../auth/types'
 import { beginLinkOAuth, loadActivityDigestPreferences, loadOwnProfile, loadPublicProfile, updateActivityDigestPreferences, updateOwnProfile } from '../services/auth'
@@ -71,7 +71,7 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
     setNotificationSaved(false)
     try {
       const result = await updateActivityDigestPreferences(notificationDraft)
-      setNotificationDraft({ email: result.email ?? notificationDraft.email, activityDigest: result.preferences.activityDigest })
+      setNotificationDraft({ email: result.email ?? '', activityDigest: result.preferences.activityDigest })
       setNotificationSaved(true)
       window.setTimeout(() => setNotificationSaved(false), 2200)
     } catch (cause) {
@@ -112,11 +112,11 @@ export function ProfilePage({ session, profileId, badgesOnly = false, onBack, on
         <div className="profile-link-field"><Globe2 size={18} /><label htmlFor="profile-website"><span>Website or portfolio</span><small>Your public home on the web</small></label><input id="profile-website" type="url" placeholder="https://your-site.com" value={draft.websiteUrl} onChange={(event) => setDraft({ ...draft, websiteUrl: event.target.value })} /></div>
         <footer><span>{saved ? 'Profile saved.' : 'These links are visible when someone opens your profile.'}</span><button type="submit"><Save size={14} /> Save profile</button></footer>
       </form><form className="profile-notifications" onSubmit={submitNotifications}>
-        <div><span>ACTIVITY DELIVERY</span><h2>Daily activity digest</h2><p>Get one daily email only when people reply to your posts or comments, or leave feedback on your showcase or feedback request.</p></div>
-        <div className="profile-field"><label htmlFor="digest-email">Email address</label><input id="digest-email" type="email" autoComplete="email" placeholder="you@example.com" value={notificationDraft.email} onChange={(event) => setNotificationDraft({ ...notificationDraft, email: event.target.value })} /></div>
-        <label className="profile-notifications__choice"><input type="checkbox" checked={notificationDraft.activityDigest} onChange={(event) => setNotificationDraft({ ...notificationDraft, activityDigest: event.target.checked })} /> <span>Send me daily activity digests</span></label>
-        <small>Transactional activity only, never marketing. You can stop these emails here or from any digest.</small>
-        <button type="submit"><Save size={14} /> {notificationSaved ? 'Digest settings saved' : 'Save digest settings'}</button>
+        <div className="profile-notifications__intro"><span className="profile-notifications__mark"><BellRing size={17} /></span><div><span>EMAIL &amp; NOTIFICATIONS</span><h2>Choose how the tribe reaches you</h2><p>Control the private address on your account and whether community activity is bundled into a daily email.</p></div></div>
+        <div className="profile-field profile-notifications__email"><label htmlFor="digest-email"><Mail size={14} /> Account email</label><input id="digest-email" type="email" autoComplete="email" placeholder="you@example.com" required={notificationDraft.activityDigest} aria-describedby="digest-email-hint" value={notificationDraft.email} onChange={(event) => setNotificationDraft({ ...notificationDraft, email: event.target.value })} /><small id="digest-email-hint" className="profile-field__hint">Private. Used only for account and enabled notification delivery.</small></div>
+        <label className="profile-notifications__choice"><input type="checkbox" checked={notificationDraft.activityDigest} onChange={(event) => setNotificationDraft({ ...notificationDraft, activityDigest: event.target.checked })} /> <span><strong>Daily activity digest</strong><small>One email on days when people reply to your posts or leave feedback on your work.</small></span></label>
+        <small className="profile-notifications__privacy">No marketing mail. Opt out here or from the link included in every digest.</small>
+        <button type="submit"><Save size={14} /> {notificationSaved ? 'Email preferences saved' : 'Save email preferences'}</button>
       </form><BadgeCollection profile={humanProfile} /></> : humanProfile ? <><div className="public-profile-links">
         <p>{humanProfile.bio || humanProfile.headline || 'Builder on VibeCodingTribe'}</p>
         <div>{humanProfile.githubUrl && <a href={humanProfile.githubUrl} target="_blank" rel="noreferrer"><Github size={17} /> GitHub <ArrowUpRight size={13} /></a>}{humanProfile.linkedinUrl && <a href={humanProfile.linkedinUrl} target="_blank" rel="noreferrer"><Linkedin size={17} /> LinkedIn <ArrowUpRight size={13} /></a>}{humanProfile.websiteUrl && <a href={humanProfile.websiteUrl} target="_blank" rel="noreferrer"><Globe2 size={17} /> Website <ArrowUpRight size={13} /></a>}</div>

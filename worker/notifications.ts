@@ -63,7 +63,7 @@ function eventDeepLink(appOrigin: string, channelId: CommunityChannelId, parentI
 }
 
 export function isDigestActivity(message: RealtimeMessageRecord, parent: RealtimeMessageRecord) {
-  if (!message.parentId || message.id === parent.id) return false
+  if (!message.parentId || message.id === parent.id || message.deletedAt || parent.deletedAt) return false
   if (message.commentKind === 'feedback') {
     return ['showcase', 'update', 'needs_feedback'].includes(parent.intent ?? '')
   }

@@ -172,6 +172,43 @@ describe('RealtimeRoom channel isolation', () => {
     expect(messages[0]).toMatchObject({ id: 'feedback_parent_1', channelId: 'feedback', likedByClientIds: ['client_builder_1234'] })
   })
 
+  it('lets a human edit and remove only their own message while retaining public revisions', async () => {
+    const state = createState()
+    const room = new RealtimeRoom(state as never)
+    const owner = socket('general')
+    await room.webSocketMessage(owner as never, JSON.stringify({ type: 'send', message: { id: 'editable_post_12345678', channelId: 'general', text: 'Original copy' } }))
+    await room.webSocketMessage(owner as never, JSON.stringify({ type: 'edit_message', channelId: 'general', messageId: 'editable_post_12345678', text: 'Revised copy' }))
+
+    let exported = await room.fetch(new Request('https://internal/internal/export?channelId=general'))
+    let record = (await exported.json() as { messages: Array<{ text: string; editedAt?: string; revisions?: Array<{ revision: number; text: string }> }> }).messages[0]!
+    expect(record).toMatchObject({ text: 'Revised copy', editedAt: expect.any(String), revisions: [{ revision: 1, text: 'Original copy' }] })
+
+    const stranger = { ...socket('general'), deserializeAttachment: () => ({ channelId: 'general', clientId: 'client_stranger_1234', displayName: 'Stranger', handle: 'stranger', avatarColor: '#657c54', canSend: true }) }
+    await room.webSocketMessage(stranger as never, JSON.stringify({ type: 'delete_message', channelId: 'general', messageId: 'editable_post_12345678' }))
+    expect(JSON.parse(stranger.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({ message: expect.stringMatching(/only change/) })
+
+    await room.webSocketMessage(owner as never, JSON.stringify({ type: 'delete_message', channelId: 'general', messageId: 'editable_post_12345678' }))
+    exported = await room.fetch(new Request('https://internal/internal/export?channelId=general'))
+    record = (await exported.json() as { messages: Array<{ text: string; deletedAt?: string; revisions?: Array<{ revision: number; text: string }> }> }).messages[0]!
+    expect(record).toMatchObject({ text: '', deletedAt: expect.any(String), revisions: [{ revision: 1, text: 'Original copy' }, { revision: 2, text: 'Revised copy' }] })
+  })
+
+  it('lets an authenticated agent edit its own message through the HTTP API', async () => {
+    const room = new RealtimeRoom(createState([{
+      id: 'agent_editable_12345678', channelId: 'general', clientId: 'agent_agent_1234567890123456', profileId: 'agent_agent_1234567890123456', actorType: 'agent',
+      displayName: 'Scout', handle: 'scout', avatarColor: '#c8ddf0', text: 'Agent original', sentAt: '2026-08-03T10:00:00.000Z',
+    }]) as never)
+    const response = await room.fetch(new Request('https://internal/internal/messages?channelId=general', {
+      method: 'PATCH',
+      headers: { ...agentHeaders(), 'X-VCT-Message-Id': 'agent_editable_12345678', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Agent revision' }),
+    }))
+    const result = await response.json() as { message: { text: string; revisions: Array<{ text: string }> } }
+
+    expect(response.status).toBe(200)
+    expect(result.message).toMatchObject({ text: 'Agent revision', revisions: [{ text: 'Agent original' }] })
+  })
+
   it('throttles excessive websocket messages from one authenticated participant', async () => {
     const state = createState()
     const room = new RealtimeRoom(state as never)

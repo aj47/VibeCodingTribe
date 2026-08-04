@@ -47,6 +47,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -100,6 +102,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -140,6 +144,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -161,9 +167,8 @@ describe('CommunityFeed post hierarchy', () => {
     expect(screen.getByRole('link', { name: /Vimeo video/ })).toHaveAttribute('href', 'https://vimeo.com/76979871')
   })
 
-  it('scrolls to and focuses a thread opened from active threads', async () => {
-    const scrollIntoView = vi.fn()
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+  it('opens a focused thread drawer from an active thread', async () => {
+    const onCloseThread = vi.fn()
     render(<CommunityFeed
       profile={profile}
       provider="github"
@@ -180,6 +185,8 @@ describe('CommunityFeed post hierarchy', () => {
       threadId="feedback_12345678"
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -187,6 +194,7 @@ describe('CommunityFeed post hierarchy', () => {
       onOpenMissions={noop}
       onOpenChannel={noop}
       onOpenThread={noop}
+      onCloseThread={onCloseThread}
       onReadThread={noop}
       onOpenProfile={noop}
       onOpenOwnProfile={noop}
@@ -194,9 +202,11 @@ describe('CommunityFeed post hierarchy', () => {
       onInviteAgent={noop}
     />)
 
-    const replyField = await screen.findByRole('textbox', { name: 'Reply to Ada Builder' })
-    await waitFor(() => expect(replyField).toHaveFocus())
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+    const drawer = screen.getByRole('dialog', { name: 'Review this request' })
+    expect(within(drawer).getByRole('textbox', { name: 'Give feedback on Ada Builder' })).toBeInTheDocument()
+    expect(within(drawer).getByRole('button', { name: 'Close thread' })).toHaveFocus()
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close thread' }))
+    expect(onCloseThread).toHaveBeenCalledTimes(1)
   })
 
   it('renders at most three replies and collapses the middle replies', () => {
@@ -224,6 +234,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -239,7 +251,54 @@ describe('CommunityFeed post hierarchy', () => {
     />)
 
     expect(container.querySelectorAll('.community-reply')).toHaveLength(3)
-    expect(screen.getByText('… 2 middle replies hidden …')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View 2 more responses' })).toBeInTheDocument()
+  })
+
+  it('collapses long replies and exposes the complete text on demand', () => {
+    const longReply: RealtimeMessageRecord = {
+      ...profile,
+      id: 'long_reply_12345678',
+      channelId: 'general',
+      text: Array.from({ length: 12 }, (_, index) => `Finding ${index + 1}: this is a concrete observation with a suggested next step.`).join(' '),
+      sentAt: '2026-07-21T18:04:00.000Z',
+      parentId: 'feedback_12345678',
+      commentKind: 'feedback',
+    }
+    const { container } = render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[...messages, longReply]}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={noop}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    expect(container.querySelector('.community-reply-copy.is-collapsed')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Read full feedback' }))
+    expect(container.querySelector('.community-reply-copy.is-collapsed')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument()
   })
 
   it('renders replies to replies in the top-level post thread', () => {
@@ -267,6 +326,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -306,6 +367,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -343,6 +406,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={onSend}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={onUploadImage}
       onSignIn={noop}
       onSignOut={noop}
@@ -390,6 +455,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -429,6 +496,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={onToggleLike}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}
@@ -457,6 +526,67 @@ describe('CommunityFeed post hierarchy', () => {
     expect(onToggleLike).toHaveBeenCalledWith('reply_12345678', false)
   })
 
+  it('edits and removes owned posts while exposing every prior version publicly', () => {
+    const onEditMessage = vi.fn()
+    const onDeleteMessage = vi.fn()
+    const onOpenOwnProfile = vi.fn()
+    const revised = {
+      ...messages[0]!,
+      text: 'Current copy',
+      editedAt: '2026-07-21T18:04:00.000Z',
+      revisions: [{ revision: 1, createdAt: messages[0]!.sentAt, text: 'Original copy' }],
+    }
+    render(<CommunityFeed
+      profile={profile}
+      provider="github"
+      canPost
+      authChecking={false}
+      messages={[revised]}
+      participants={[]}
+      onlineCount={1}
+      connectionStatus="connected"
+      missionsOnly={false}
+      channelId="general"
+      channelActivity={{}}
+      readState={{ channels: {}, threads: {} }}
+      onSend={noop}
+      onToggleLike={noop}
+      onEditMessage={onEditMessage}
+      onDeleteMessage={onDeleteMessage}
+      onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
+      onSignIn={noop}
+      onSignOut={noop}
+      onOpenFeed={noop}
+      onOpenMissions={noop}
+      onOpenChannel={noop}
+      onOpenThread={noop}
+      onReadThread={noop}
+      onOpenProfile={noop}
+      onOpenOwnProfile={onOpenOwnProfile}
+      onOpenBadges={noop}
+      onInviteAgent={noop}
+    />)
+
+    const post = screen.getByText('Current copy', { selector: 'article > p' }).closest('article') as HTMLElement
+    fireEvent.click(within(post).getByRole('button', { name: 'Edit' }))
+    const editor = screen.getByRole('textbox', { name: 'Edit post' })
+    fireEvent.change(editor, { target: { value: 'A clearer current copy' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(onEditMessage).toHaveBeenCalledWith('chat_12345678', 'A clearer current copy')
+
+    fireEvent.click(within(post).getByRole('button', { name: 'History' }))
+    expect(screen.getByRole('dialog', { name: 'Edit history' })).toHaveTextContent('Current copy')
+    expect(screen.getByRole('dialog', { name: 'Edit history' })).toHaveTextContent('Original copy')
+    fireEvent.click(screen.getByRole('button', { name: 'Close edit history' }))
+
+    fireEvent.click(within(post).getByRole('button', { name: 'Remove' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove post' }))
+    expect(onDeleteMessage).toHaveBeenCalledWith('chat_12345678')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Email and notification settings' }))
+    expect(onOpenOwnProfile).toHaveBeenCalledOnce()
+  })
+
   it('falls back to initials when a profile image cannot load', () => {
     const brokenAvatarMessage = { ...messages[0], avatarUrl: 'https://cdn.example/broken.png' }
     const { container } = render(<CommunityFeed
@@ -474,6 +604,8 @@ describe('CommunityFeed post hierarchy', () => {
       readState={{ channels: {}, threads: {} }}
       onSend={noop}
       onToggleLike={noop}
+      onEditMessage={noop}
+      onDeleteMessage={noop}
       onUploadImage={vi.fn(async () => 'https://media.example/image.png')}
       onSignIn={noop}
       onSignOut={noop}

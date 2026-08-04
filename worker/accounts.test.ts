@@ -285,5 +285,7 @@ describe('AccountStore', () => {
     expect(await updated.json()).toEqual({ preferences: { activityDigest: true }, email: 'preference@example.com' })
     const disabled = await store.fetch(request('/notification-preferences', { accountId: account.id, activityDigest: false }, 'PATCH'))
     expect(await disabled.json()).toEqual({ preferences: { activityDigest: false }, email: 'preference@example.com' })
+    const cleared = await store.fetch(request('/notification-preferences', { accountId: account.id, email: '', activityDigest: false }, 'PATCH'))
+    expect(await cleared.json()).toEqual({ preferences: { activityDigest: false } })
   })
 })
