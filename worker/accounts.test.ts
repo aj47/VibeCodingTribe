@@ -23,7 +23,10 @@ function request(path: string, body?: unknown, method = body === undefined ? 'GE
   })
 }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
 
 describe('AccountStore', () => {
   it('links provider identities into one human profile', async () => {
@@ -93,11 +96,43 @@ describe('AccountStore', () => {
     expect(authorization.enrollment.status).toBe('delivered')
 
     const claimed = await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))
-    const payload = await claimed.json() as { apiKey: string; type: string; agent: { name: string } }
+    const payload = await claimed.json() as { apiKey: string; type: string; agent: { name: string }; verification: { required: boolean; expiresAt: string } }
     expect(claimed.status).toBe(200)
     expect(payload).toMatchObject({ type: 'vibecodingtribe.agent.authorized', agent: { name: 'Inbox Scout' } })
     expect(payload.apiKey).toMatch(/^vct_agent_/)
+    expect(payload.verification.required).toBe(true)
+
+    const retried = await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))
+    expect(retried.status).toBe(200)
+    expect((await retried.json() as { apiKey: string }).apiKey).toBe(payload.apiKey)
+
+    expect((await store.fetch(request('/credentials/authenticate', { token: payload.apiKey }))).status).toBe(200)
     expect((await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))).status).toBe(202)
+  })
+
+  it('expires and revokes a claimed key that is not verified in time', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-03T12:00:00.000Z'))
+    const store = createStore({ SESSION_SECRET: 'test-session-secret-that-is-long-enough' })
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const callbackId = new URL(url).pathname.split('/').at(-1)
+      return store.fetch(request(`/enrollments/${callbackId}/callback`, JSON.parse(String(init?.body))))
+    }))
+    const identityResponse = await store.fetch(request('/identity/resolve', { identity: {
+      provider: 'github', subject: 'gh-expiring-agent-owner', displayName: 'Owner', handle: 'owner',
+    } }))
+    const { account } = await identityResponse.json() as { account: { id: string } }
+    const enrollmentResponse = await store.fetch(request('/enrollments', { name: 'Expiring Scout', hostedCallbackOrigin: 'https://worker.example' }))
+    const created = await enrollmentResponse.json() as { enrollment: { id: string }; deliveryToken: string }
+    await store.fetch(request(`/enrollments/${created.enrollment.id}/authorize`, { accountId: account.id }))
+    const firstClaim = await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))
+    const { apiKey } = await firstClaim.json() as { apiKey: string }
+
+    vi.advanceTimersByTime(15 * 60_000)
+    expect((await store.fetch(request('/credentials/authenticate', { token: apiKey }))).status).toBe(401)
+    const expired = await store.fetch(request(`/enrollments/${created.enrollment.id}/credential`, { deliveryToken: created.deliveryToken }))
+    expect(expired.status).toBe(410)
+    expect(await expired.json()).toEqual({ error: 'The claimed credential was not verified within 15 minutes.' })
   })
 
   it('rejects unsafe callbacks and cross-account identity linking', async () => {

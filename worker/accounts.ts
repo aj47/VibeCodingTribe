@@ -85,6 +85,7 @@ interface HostedDeliveryRecord {
   credentialId: string
   ciphertext: string
   deliveredAt: string
+  claimedAt?: string
 }
 
 type AgentDeliveryType = 'vibecodingtribe.agent.authorized' | 'vibecodingtribe.agent.key_rotated'
@@ -133,6 +134,7 @@ const RATE_LIMIT = 60
 const RATE_WINDOW_MS = 60_000
 const ENROLLMENT_LIMIT = 10
 const ENROLLMENT_WINDOW_MS = 60 * 60_000
+const DELIVERY_VERIFICATION_WINDOW_MS = 15 * 60_000
 const MAX_POINTS_PER_DAY = 20
 const POINTS_BACKFILL_KEY = 'points:backfill:v1'
 const POINTS_BACKFILL_VERSION = 1
@@ -959,6 +961,20 @@ export class AccountStore implements DurableObject {
     const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${parsed.id}`)
     if (!credential || credential.revokedAt || credential.secretHash !== await sha256(parsed.secret)) return json({ error: 'Invalid or revoked API key' }, 401)
     const now = Date.now()
+    const enrollment = credential.enrollmentId
+      ? await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${credential.enrollmentId}`)
+      : undefined
+    if (enrollment?.pendingDelivery?.credentialId === credential.id && enrollment.pendingDelivery.claimedAt && now - Date.parse(enrollment.pendingDelivery.claimedAt) >= DELIVERY_VERIFICATION_WINDOW_MS) {
+      credential.revokedAt = new Date(now).toISOString()
+      enrollment.status = 'failed'
+      enrollment.deliveryError = 'The claimed credential was not verified within 15 minutes.'
+      delete enrollment.pendingDelivery
+      await this.state.storage.put({
+        [`${CREDENTIAL_PREFIX}${credential.id}`]: credential,
+        [`${ENROLLMENT_PREFIX}${credential.enrollmentId}`]: enrollment,
+      })
+      return json({ error: 'Invalid or expired API key' }, 401)
+    }
     if (now - credential.rateWindowStartedAt >= RATE_WINDOW_MS) {
       credential.rateWindowStartedAt = now
       credential.rateWindowCount = 0
@@ -968,9 +984,15 @@ export class AccountStore implements DurableObject {
     }
     credential.rateWindowCount += 1
     credential.lastUsedAt = new Date(now).toISOString()
-    await this.state.storage.put(`${CREDENTIAL_PREFIX}${credential.id}`, credential)
     const account = await this.state.storage.get<HumanAccount>(`${ACCOUNT_PREFIX}${credential.accountId}`)
     if (!account) return json({ error: 'Owning human account no longer exists' }, 401)
+    const writes: Record<string, unknown> = { [`${CREDENTIAL_PREFIX}${credential.id}`]: credential }
+    if (credential.enrollmentId && enrollment?.pendingDelivery?.credentialId === credential.id) {
+      delete enrollment.pendingDelivery
+      delete enrollment.deliveryError
+      writes[`${ENROLLMENT_PREFIX}${credential.enrollmentId}`] = enrollment
+    }
+    await this.state.storage.put(writes)
     const result: AgentAuthResult = {
       agent: { id: credential.id, name: credential.name, handle: credential.handle || agentHandle(credential.name, credential.id), ...(credential.avatarUrl ? { avatarUrl: credential.avatarUrl } : {}) },
       owner: publicProfile(account),
@@ -1097,17 +1119,40 @@ export class AccountStore implements DurableObject {
     const enrollment = await this.state.storage.get<AgentEnrollmentRecord>(`${ENROLLMENT_PREFIX}${id}`)
     if (!enrollment || !enrollment.deliveryTokenHash || enrollment.deliveryDisabledAt || enrollment.deliveryTokenHash !== await sha256(token)) return json({ error: 'Invalid or expired delivery token' }, 401)
     if (!enrollment.pendingDelivery) {
-      if (enrollment.status === 'failed') return json({ error: 'Key delivery failed' }, 502)
+      if (enrollment.status === 'failed') return json({ error: enrollment.deliveryError || 'Key delivery failed' }, enrollment.deliveryError ? 410 : 502)
       if (enrollment.status === 'pending' && new Date(enrollment.expiresAt).getTime() <= Date.now()) return json({ error: 'This authorization request expired' }, 410)
       return json({ status: enrollment.status === 'pending' ? 'pending' : 'waiting', enrollmentId: id, retryAfterSeconds: 2 }, 202)
     }
-    const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${enrollment.pendingDelivery.credentialId}`)
+    const pendingDelivery = enrollment.pendingDelivery
+    const credential = await this.state.storage.get<AgentCredentialRecord>(`${CREDENTIAL_PREFIX}${pendingDelivery.credentialId}`)
     if (!credential || credential.revokedAt || enrollment.activeCredentialId !== credential.id) return json({ error: 'This agent credential is no longer active' }, 410)
-    const payload = await decryptHostedDelivery<Record<string, unknown>>(enrollment.pendingDelivery.ciphertext, this.env)
+    const now = Date.now()
+    if (pendingDelivery.claimedAt && now - Date.parse(pendingDelivery.claimedAt) >= DELIVERY_VERIFICATION_WINDOW_MS) {
+      credential.revokedAt = new Date(now).toISOString()
+      enrollment.status = 'failed'
+      enrollment.deliveryError = 'The claimed credential was not verified within 15 minutes.'
+      delete enrollment.pendingDelivery
+      await this.state.storage.put({
+        [`${CREDENTIAL_PREFIX}${credential.id}`]: credential,
+        [`${ENROLLMENT_PREFIX}${id}`]: enrollment,
+      })
+      return json({ error: enrollment.deliveryError }, 410)
+    }
+    const payload = await decryptHostedDelivery<Record<string, unknown>>(pendingDelivery.ciphertext, this.env)
     if (!payload) return json({ error: 'The hosted delivery could not be opened' }, 500)
-    delete enrollment.pendingDelivery
-    await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
-    return json(payload)
+    const claimedAt = pendingDelivery.claimedAt || new Date(now).toISOString()
+    if (!pendingDelivery.claimedAt) {
+      pendingDelivery.claimedAt = claimedAt
+      await this.state.storage.put(`${ENROLLMENT_PREFIX}${id}`, enrollment)
+    }
+    return json({
+      ...payload,
+      verification: {
+        required: true,
+        expiresAt: new Date(Date.parse(claimedAt) + DELIVERY_VERIFICATION_WINDOW_MS).toISOString(),
+        clearsHostedCopyAfter: 'first successful authenticated API request',
+      },
+    })
   }
 
   private async ownedCredential(id: string, body: Record<string, unknown> | null) {
